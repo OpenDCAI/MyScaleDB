@@ -20,7 +20,7 @@
 #include <IO/Operators.h>
 #include <fmt/core.h>
 
-#include <VectorIndex/Common/SegmentsMgr.h>
+#include <AIDB/Common/SegmentsMgr.h>
 
 namespace ProfileEvents
 {

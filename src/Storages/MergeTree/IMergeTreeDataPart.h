@@ -33,7 +33,7 @@ namespace zkutil
     using ZooKeeperPtr = std::shared_ptr<ZooKeeper>;
 }
 
-namespace VectorIndex
+namespace AIDB
 {
 class SegmentsMgr;
 using SegmentsMgrPtr = std::unique_ptr<SegmentsMgr>;
@@ -403,7 +403,7 @@ public:
     void unloadIndex();
     bool isIndexLoaded() const;
 
-    mutable VectorIndex::SegmentsMgrPtr segments_mgr;
+    mutable AIDB::SegmentsMgrPtr segments_mgr;
 
     /// For data in RAM ('index')
     UInt64 getIndexSizeInBytes() const;

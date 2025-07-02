@@ -94,8 +94,8 @@
 #include <Storages/System/StorageSystemDashboards.h>
 #include <Storages/System/StorageSystemViewRefreshes.h>
 #include <Storages/System/StorageSystemDNSCache.h>
-#include <VectorIndex/Storages/StorageSystemVIs.h>
-#include <VectorIndex/Storages/StorageSystemVIsWithPart.h>
+#include <AIDB/Storages/StorageSystemVIs.h>
+#include <AIDB/Storages/StorageSystemVIsWithPart.h>
 
 #if defined(__ELF__) && !defined(OS_FREEBSD)
 #include <Storages/System/StorageSystemSymbols.h>

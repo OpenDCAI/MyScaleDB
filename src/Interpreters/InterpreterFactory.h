@@ -26,7 +26,7 @@ public:
 
     using InterpreterPtr = std::unique_ptr<IInterpreter>;
 
-     InterpreterPtr get(
+    InterpreterPtr get(
         ASTPtr & query,
         ContextMutablePtr context,
         const SelectQueryOptions & options = {});

@@ -69,7 +69,7 @@
 #include <algorithm>
 #include <unistd.h>
 
-#include <VectorIndex/Common/VectorIndicesMgr.h>
+#include <AIDB/Common/VectorIndicesMgr.h>
 
 #if USE_PROTOBUF
 #include <Formats/ProtobufSchemas.h>

@@ -47,7 +47,7 @@
 
 #include <Interpreters/StorageID.h>
 
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 #include <Common/logger_useful.h>
 
 namespace DB

@@ -4,7 +4,7 @@
 #include <DataTypes/NestedUtils.h>
 #include <Storages/StorageView.h>
 #include <sparsehash/dense_hash_set>
-#include <VectorIndex/Utils/HybridSearchUtils.h>
+#include <AIDB/Utils/HybridSearchUtils.h>
 
 namespace DB
 {
@@ -115,8 +115,8 @@ NamesAndTypesList StorageSnapshot::getColumnsByNames(const GetColumnsOptions & o
             continue;
         }
 
-        /// Check special columns for text/vector/hybrid search after get columns from table columns
-        if (isDistance(name) || isTextSearch(name) || isHybridSearch(name) || isScoreColumnName(name))
+        /// Check special columns for text/vector/hybrid/sparse search after get columns from table columns
+        if (isDistance(name) || isTextSearch(name) || isHybridSearch(name) || isSparseSearch(name) || isScoreColumnName(name))
         {
             res.emplace_back(name, std::make_shared<DataTypeFloat32>());
         }
@@ -239,7 +239,8 @@ Block StorageSnapshot::getSampleBlockForColumns(const Names & column_names) cons
             const auto & type = virtual_column->type;
             res.insert({type->createColumn(), type, column_name});
         }
-        else if (isDistance(column_name) || isTextSearch(column_name) || isHybridSearch(column_name) || isScoreColumnName(column_name))
+        else if (isDistance(column_name) || isTextSearch(column_name) || isHybridSearch(column_name) || isSparseSearch(column_name)
+            || isScoreColumnName(column_name))
         {
             auto type = std::make_shared<DataTypeFloat32>();
             res.insert({type->createColumn(), type, column_name});

@@ -5,8 +5,12 @@
 #include <Common/MemoryTrackerBlockerInThread.h>
 #include <Common/logger_useful.h>
 
-#if USE_TANTIVY_SEARCH
-#    include <Storages/MergeTree/MergeTreeIndexTantivy.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
 #endif
 
 namespace ProfileEvents
@@ -311,18 +315,41 @@ void MergeTreeDataPartWriterOnDisk::initSkipIndices()
             gin_index_stores[stream_name] = store;
             skip_indices_aggregators.push_back(skip_index->createIndexAggregatorForPart(store, settings));
         }
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
         else if (typeid_cast<const MergeTreeIndexTantivy *>(&*skip_index) != nullptr)
         {
-            String store_key = TantivyIndexStoreFactory::instance().generateKey(stream_name, data_part_storage);
-            TantivyIndexStorePtr store = TantivyIndexStoreFactory::instance().getOrInitForBuild(
+            TantivyIndexStorePtr store = TantivyIndexFactory::instance().getOrInitForBuild(
                 stream_name, data_part_storage, data_part_storage);
             skip_indices_aggregators.push_back(skip_index->createIndexAggregatorForPart(store, settings));
+
+            StoreKey store_key = std::make_pair(data_part_storage->getRelativePath(), stream_name);
             auto status = tantivy_index_store_keys.insert(store_key);
             if (!status.second)
             {
                 LOG_WARNING(
-                    getLogger("MergeTreeDataPartWriterOnDisk"), "[initSkipIndices] store_key({}) already exists", store_key);
+                    getLogger("MergeTreeDataPartWriterOnDisk"),
+                    "[initSkipIndices] store_key({},{}) already exists for FTS",
+                    store_key.first,
+                    store_key.second);
+            }
+        }
+#endif
+#if USE_SPARSE_INDEX
+        else if (typeid_cast<const MergeTreeIndexSparse *>(&*skip_index) != nullptr)
+        {
+            SparseIndexStorePtr store = SparseIndexFactory::instance().getOrInitForBuild(
+                stream_name, data_part_storage, data_part_storage);
+            skip_indices_aggregators.push_back(skip_index->createIndexAggregatorForPart(store, settings));
+
+            StoreKey store_key = std::make_pair(data_part_storage->getRelativePath(), stream_name);
+            auto status = sparse_index_store_keys.insert(store_key);
+            if (!status.second)
+            {
+                LOG_WARNING(
+                    getLogger("MergeTreeDataPartWriterOnDisk"),
+                    "[initSkipIndices] store_key({},{}) already exists for Sparse",
+                    store_key.first,
+                    store_key.second);
             }
         }
 #endif
@@ -419,12 +446,23 @@ void MergeTreeDataPartWriterOnDisk::calculateAndSerializeSkipIndices(const Block
                     store = it->second;
                     skip_indices_aggregators[i] = index_helper->createIndexAggregatorForPart(store, settings);
                 }
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
                 else if (typeid_cast<const MergeTreeIndexTantivy *>(&*index_helper) != nullptr)
                 {
                     String stream_name = index_helper->getFileName();
-                    TantivyIndexStorePtr store
-                        = TantivyIndexStoreFactory::instance().getForBuild(stream_name, data_part_storage);
+                    TantivyIndexStorePtr store = TantivyIndexFactory::instance().getForBuild(stream_name, data_part_storage);
+                    if (store == nullptr)
+                    {
+                        throw Exception(ErrorCodes::LOGICAL_ERROR, "store hasn't been initialized, it shouldn't happen.");
+                    }
+                    skip_indices_aggregators[i] = index_helper->createIndexAggregatorForPart(store, settings);
+                }
+#endif
+#if USE_SPARSE_INDEX
+                else if (typeid_cast<const MergeTreeIndexSparse *>(&*index_helper) != nullptr)
+                {
+                    String stream_name = index_helper->getFileName();
+                    SparseIndexStorePtr store = SparseIndexFactory::instance().getForBuild(stream_name, data_part_storage);
                     if (store == nullptr)
                     {
                         throw Exception(ErrorCodes::LOGICAL_ERROR, "store hasn't been initialized, it shouldn't happen.");
@@ -536,17 +574,16 @@ void MergeTreeDataPartWriterOnDisk::fillSkipIndicesChecksums(MergeTreeData::Data
         }
     }
 
-#if USE_TANTIVY_SEARCH
-
+#if USE_FTS_INDEX
     if (tantivy_index_store_keys.size() != 0)
     {
         for (auto it = tantivy_index_store_keys.begin(); it != tantivy_index_store_keys.end(); ++it)
         {
-            TantivyIndexStorePtr store = TantivyIndexStoreFactory::instance().getForBuidWithKey(*it);
+            TantivyIndexStorePtr store = TantivyIndexFactory::instance().get(*it);
             if (store)
             {
-                store->finalizeTantivyIndex();
-                ChecksumPairs tantivy_checksums = store->serialize();
+                store->finalizeIndex();
+                ChecksumPairs tantivy_checksums = store->archiveIndex();
                 for (const auto & checksum_pair : tantivy_checksums)
                 {
                     checksums.files[checksum_pair.first] = checksum_pair.second;
@@ -554,6 +591,26 @@ void MergeTreeDataPartWriterOnDisk::fillSkipIndicesChecksums(MergeTreeData::Data
             }
         }
         tantivy_index_store_keys.clear();
+    }
+#endif
+
+#if USE_SPARSE_INDEX
+    if (sparse_index_store_keys.size() != 0)
+    {
+        for (auto it = sparse_index_store_keys.begin(); it != sparse_index_store_keys.end(); ++it)
+        {
+            SparseIndexStorePtr store = SparseIndexFactory::instance().get(*it);
+            if (store)
+            {
+                store->finalizeIndex();
+                ChecksumPairs sparse_checksums = store->archiveIndex();
+                for (const auto & checksum_pair : sparse_checksums)
+                {
+                    checksums.files[checksum_pair.first] = checksum_pair.second;
+                }
+            }
+        }
+        sparse_index_store_keys.clear();
     }
 #endif
 

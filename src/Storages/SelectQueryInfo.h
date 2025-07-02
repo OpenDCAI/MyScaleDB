@@ -9,7 +9,7 @@
 #include <Interpreters/PreparedSets.h>
 #include <Planner/PlannerContext.h>
 #include <QueryPipeline/StreamLocalLimits.h>
-#include <VectorIndex/Storages/VSDescription.h>
+#include <AIDB/Storages/VSDescription.h>
 
 #include <memory>
 
@@ -39,6 +39,9 @@ using TextSearchInfoPtr = std::shared_ptr<const TextSearchInfo>;
 
 struct HybridSearchInfo;
 using HybridSearchInfoPtr = std::shared_ptr<const HybridSearchInfo>;
+
+struct SparseSearchInfo;
+using SparseSearchInfoPtr = std::shared_ptr<const SparseSearchInfo>;
 
 struct TreeRewriterResult;
 using TreeRewriterResultPtr = std::shared_ptr<const TreeRewriterResult>;
@@ -217,8 +220,9 @@ struct SelectQueryInfo
     VectorScanInfoPtr vector_scan_info;
     TextSearchInfoPtr text_search_info;
     HybridSearchInfoPtr hybrid_search_info;
+    SparseSearchInfoPtr sparse_search_info;
 
-    /// If query has one of text search, vector scan and hybrid search functions
+    /// If query has one of vector / text / hybrid / sparse search functions
     bool has_hybrid_search = false;
 
     /// It is needed for full_text_search table function on distributed table

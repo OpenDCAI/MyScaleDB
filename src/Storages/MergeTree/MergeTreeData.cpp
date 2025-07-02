@@ -110,14 +110,20 @@
 #include <azure/core/http/http.hpp>
 #endif
 
-#include <VectorIndex/Cache/PKCacheManager.h>
-#include <VectorIndex/Cache/VICacheManager.h>
-#include <VectorIndex/Interpreters/VIEventLog.h>
-#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
-#include <VectorIndex/Utils/VIUtils.h>
-#if USE_TANTIVY_SEARCH
-#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#include <AIDB/Cache/PKCacheManager.h>
+#include <AIDB/Cache/VICacheManager.h>
+#include <AIDB/Interpreters/VIEventLog.h>
+#include <AIDB/Common/StorageVectorIndicesMgr.h>
+#include <AIDB/Utils/VIUtils.h>
+
+#if USE_FTS_INDEX
+#    include <AIDB/Factory/TantivyIndexFactory.h>
 #endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Factory/SparseIndexFactory.h>
+#endif
+
 template <>
 struct fmt::formatter<DB::DataPartPtr> : fmt::formatter<std::string>
 {
@@ -202,6 +208,7 @@ namespace ErrorCodes
     extern const int CANNOT_FORGET_PARTITION;
     extern const int DATA_TYPE_CANNOT_BE_USED_IN_KEY;
     extern const int TANTIVY_INDEX_CACHE_RELOAD_ERROR;
+    extern const int INVALID_VECTOR_INDEX;
 }
 
 static void checkSuspiciousIndices(const ASTFunction * index_function)
@@ -695,7 +702,7 @@ void MergeTreeData::checkProperties(
     if (!new_metadata.vec_indices.empty())
     {
         std::unordered_set<String> vec_indices_names;
-        std::unordered_set<String> vec_columns_names;
+        std::unordered_map<String, std::unordered_set<String>> vec_columns_and_index_types_map;
 
         for (const auto & vec_index : new_metadata.vec_indices)
         {
@@ -705,12 +712,16 @@ void MergeTreeData::checkProperties(
 
             vec_indices_names.insert(vec_index.name);
 
-            /// TODO: Currently we do not support multiple vector indexes on the same column
-            if (vec_columns_names.find(vec_index.column) != vec_columns_names.end())
-                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Column {} already has a vector index, not allowed to have another with name {}",
-                                backQuote(vec_index.column), backQuote(vec_index.name));
+            /// We do not support multiple vector indexes of the same type on a single column
+            if (vec_columns_and_index_types_map.find(vec_index.column) != vec_columns_and_index_types_map.end())
+            {
+                /// Further check vector index type
+                if (vec_columns_and_index_types_map[vec_index.column].count(vec_index.type) > 0)
+                    throw Exception(ErrorCodes::INVALID_VECTOR_INDEX, "Column {} already has a vector index with type {}, not allowed to have another with name {}",
+                        backQuote(vec_index.column), backQuote(vec_index.type), backQuote(vec_index.name));
+            }
 
-            vec_columns_names.insert(vec_index.column);
+            vec_columns_and_index_types_map[vec_index.column].insert(vec_index.type);
         }
     }
 
@@ -2711,27 +2722,45 @@ void MergeTreeData::clearPKCache(const DataPartsVector & parts)
     }
 }
 
-#if USE_TANTIVY_SEARCH
-void MergeTreeData::updateTantivyIndexCache()
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+void MergeTreeData::startupCustomSkipIndexCache(CustomIndexType skip_index_type)
 {
     try
     {
-        auto part_tantivy_cache_path = fs::path(getContext()->getTantivyIndexCachePath())
-            / TantivyIndexStoreFactory::instance().getPartRelativePath(getRelativeDataPath());
+        fs::path part_skip_index_store_path;
+        if (skip_index_type == CustomIndexType::TantivyIndex)
+        {
+            part_skip_index_store_path = fs::path(getContext()->getTantivyIndexStorePath())
+                / TantivyIndexFactory::instance().getPartRelativePath(getRelativeDataPath());
+        }
+        else if (skip_index_type == CustomIndexType::SparseIndex)
+        {
+            part_skip_index_store_path = fs::path(getContext()->getSparseIndexStorePath())
+                / SparseIndexFactory::instance().getPartRelativePath(getRelativeDataPath());
+        }
+        else
+        {
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Invalid skip index type: {}", getCustomIndexName(skip_index_type));
+        }
 
-        if (fs::exists(part_tantivy_cache_path))
+        if (!fs::exists(part_skip_index_store_path))
+        {
+            return;
+        }
+
+        // part_skip_index_store_path: `/var/lib/clickhouse/sparse_index_store/store/6fd/6fd97fb1-a682-4530-93d7-26132103c82d`
+        if (fs::exists(part_skip_index_store_path))
         {
             // key: part_name in ClickHouse
             // value: a group of part_names in disk with them last modified time.
             std::map<String, std::vector<std::pair<String, fs::file_time_type>>> part_map;
 
-            for (const auto & entry : fs::directory_iterator(part_tantivy_cache_path))
+            for (const auto & entry : fs::directory_iterator(part_skip_index_store_path))
             {
                 if (entry.is_directory())
                 {
                     String part_name_in_disk = entry.path().filename();
                     DataPartPtr part_name_in_ck = getActiveContainingPart(part_name_in_disk);
-
 
                     if (part_name_in_ck)
                     {
@@ -2744,14 +2773,20 @@ void MergeTreeData::updateTantivyIndexCache()
                         else
                         {
                             LOG_INFO(
-                                log, "[updateTantivyIndexCache] FTS cache part_name({}) is not a WidePart, remove it.", part_name_in_disk);
+                                log,
+                                "[startupCustomSkipIndexCache] {} cache part_name({}) is not a WidePart, remove it.",
+                                getCustomIndexName(skip_index_type),
+                                part_name_in_disk);
                             fs::remove_all(entry.path());
                         }
                     }
                     else
                     {
                         LOG_INFO(
-                            log, "[updateTantivyIndexCache] Can't find FTS cache part_name({}) in table, remove it.", part_name_in_disk);
+                            log,
+                            "[startupCustomSkipIndexCache] Can't find {} cache part_name({}) in table, remove it.",
+                            getCustomIndexName(skip_index_type),
+                            part_name_in_disk);
                         fs::remove_all(entry.path());
                     }
                 }
@@ -2769,30 +2804,38 @@ void MergeTreeData::updateTantivyIndexCache()
                 {
                     LOG_INFO(
                         log,
-                        "[updateTantivyIndexCache] Rename cache part_name {} -> {}",
-                        part_tantivy_cache_path / latest_part_name,
-                        part_tantivy_cache_path / active_part_name_in_ck);
-                    fs::rename(part_tantivy_cache_path / latest_part_name, part_tantivy_cache_path / active_part_name_in_ck);
+                        "[startupCustomSkipIndexCache] Rename cache part_name {} -> {}",
+                        part_skip_index_store_path / latest_part_name,
+                        part_skip_index_store_path / active_part_name_in_ck);
+                    fs::rename(part_skip_index_store_path / latest_part_name, part_skip_index_store_path / active_part_name_in_ck);
                 }
 
-                for (const auto & index_entry : fs::directory_iterator(part_tantivy_cache_path / active_part_name_in_ck))
+                for (const auto & index_entry : fs::directory_iterator(part_skip_index_store_path / active_part_name_in_ck))
                 {
                     if (index_entry.is_directory())
                     {
                         String skp_idx_name = index_entry.path().filename();
                         DataPartPtr active_data_part = getActiveContainingPart(active_part_name_in_ck);
-                        TantivyIndexStoreFactory::instance().getOrLoadForSearch(skp_idx_name, active_data_part->getDataPartStoragePtr());
-                        TantivyIndexStoreFactory::instance().getOrInitForBuild(
-                            skp_idx_name, active_data_part->getDataPartStoragePtr(), nullptr);
+
+                        if (skip_index_type == CustomIndexType::TantivyIndex)
+                        {
+                            // Note: this skp_idx_name have prefix: `skp_idx_`
+                            TantivyIndexFactory::instance().getOrLoadForSearch(skp_idx_name, active_data_part->getDataPartStoragePtr());
+                        }
+                        else if (skip_index_type == CustomIndexType::SparseIndex)
+                        {
+                            // Note: this skp_idx_name have prefix: `skp_idx_`
+                            SparseIndexFactory::instance().getOrLoadForSearch(skp_idx_name, active_data_part->getDataPartStoragePtr());
+                        }
                     }
                 }
                 for (size_t i = 1; i < disk_parts_list.size(); ++i)
                 {
-                    LOG_INFO(
+                    LOG_DEBUG(
                         log,
-                        "[updateTantivyIndexCache] Remove older cache part_name {}",
-                        part_tantivy_cache_path / disk_parts_list[i].first);
-                    fs::remove_all(part_tantivy_cache_path / disk_parts_list[i].first);
+                        "[startupCustomSkipIndexCache] Remove older cache part_name {}",
+                        part_skip_index_store_path / disk_parts_list[i].first);
+                    fs::remove_all(part_skip_index_store_path / disk_parts_list[i].first);
                 }
             }
         }
@@ -2800,7 +2843,7 @@ void MergeTreeData::updateTantivyIndexCache()
     catch (...)
     {
         // TODO: needs remove all directory?
-        LOG_ERROR(log, "[updateTantivyIndexCache] Updating FTS cache error.");
+        LOG_ERROR(log, "[startupCustomSkipIndexCache] Start up {} cache from {}_index_store error.", getCustomIndexName(skip_index_type), getCustomIndexName(skip_index_type));
         return;
     }
 }
@@ -3269,14 +3312,33 @@ void MergeTreeData::dropAllData()
 
             LOG_INFO(log, "dropAllData: removing table directory recursive to cleanup garbage");
             disk->removeRecursive(relative_data_path);
-#if USE_TANTIVY_SEARCH
-            auto metadata = this->getInMemoryMetadataPtr();
-            if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
             {
-                auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
-                size_t removed = TantivyIndexStoreFactory::instance().remove(relative_data_path, index_names);
-                if (removed == 0)
-                    TantivyIndexFilesManager::removeDataPartInCache(relative_data_path);
+                auto metadata = this->getInMemoryMetadataPtr();
+                if (metadata->hasSecondaryIndices())
+                {
+#if USE_FTS_INDEX
+                    if (metadata->getSecondaryIndices().hasFTS())
+                    {
+                        auto all_fts_index_names = metadata->getSecondaryIndices().getAllFTSNames();
+                        size_t removed = TantivyIndexFactory::instance().remove(relative_data_path, all_fts_index_names);
+                        // `removed==0` means that index cache doesn't managed by IndexStore.
+                        if (removed == 0)
+                            StoreDirectoryHelper::removePartRelativePathInStoreForward(relative_data_path, CustomIndexType::TantivyIndex);
+                    }
+#endif
+#if USE_SPARSE_INDEX
+                    if (metadata->getSecondaryIndices().hasSparse())
+                    {
+                        auto all_sparse_index_names = metadata->getSecondaryIndices().getAllSparseNames();
+                        size_t removed = SparseIndexFactory::instance().remove(relative_data_path, all_sparse_index_names);
+                        // `removed==0` means that index cache doesn't managed by IndexStore.
+                        if (removed == 0)
+                            StoreDirectoryHelper::removePartRelativePathInStoreForward(relative_data_path, CustomIndexType::SparseIndex);
+                    }
+#endif
+                }
             }
 #endif
         }
@@ -3445,10 +3507,16 @@ void MergeTreeData::checkAlterIsPossible(const AlterCommands & commands, Context
         throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
                 "Experimental inverted index feature is not enabled (turn on setting 'allow_experimental_inverted_index')");
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     if (AlterCommands::hasTantivyIndex(new_metadata) && !settings.allow_experimental_inverted_index)
         throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
             "Experimental Fts Index feature is not enabled (turn on setting 'allow_experimental_inverted_index')");
+#endif
+
+#if USE_SPARSE_INDEX
+    if (AlterCommands::hasSparseIndex(new_metadata) && !settings.allow_experimental_inverted_index)
+        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
+            "Experimental Sparse Index feature is not enabled (turn on setting 'allow_experimental_inverted_index')");
 #endif
 
     for (const auto & disk : getDisks())
@@ -4218,7 +4286,7 @@ bool MergeTreeData::renameTempPartAndReplaceImpl(
 {
     LOG_TRACE(log, "Renaming temporary part {} to {} with tid {}.", part->getDataPartStorage().getPartDirectory(), part->name, out_transaction.getTID());
 
-#if USE_TANTIVY_SEARCH
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
     String origin_data_path_relative_path = part->getDataPartStoragePtr()->getRelativePath();
 #endif
 
@@ -4265,12 +4333,26 @@ bool MergeTreeData::renameTempPartAndReplaceImpl(
         std::move(hierarchy.covered_parts.begin(), hierarchy.covered_parts.end(), std::back_inserter(*out_covered_parts));
     }
 
-#if USE_TANTIVY_SEARCH
-    auto metadata = part->storage.getInMemoryMetadataPtr();
-    if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
     {
-        auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
-        TantivyIndexStoreFactory::instance().renamePart(origin_data_path_relative_path, part->getDataPartStoragePtr(), index_names);
+        auto metadata = part->storage.getInMemoryMetadataPtr();
+        if (metadata->hasSecondaryIndices())
+        {
+#if USE_FTS_INDEX
+            if (metadata->getSecondaryIndices().hasFTS())
+            {
+                auto all_fts_index_names = metadata->getSecondaryIndices().getAllFTSNames();
+                TantivyIndexFactory::instance().renamePart(origin_data_path_relative_path, part->getDataPartStoragePtr(), all_fts_index_names);
+            }
+#endif
+#if USE_SPARSE_INDEX
+            if (metadata->getSecondaryIndices().hasSparse())
+            {
+                auto all_sparse_index_names = metadata->getSecondaryIndices().getAllSparseNames();
+                SparseIndexFactory::instance().renamePart(origin_data_path_relative_path, part->getDataPartStoragePtr(), all_sparse_index_names);
+            }
+#endif
+        }
     }
 #endif
 
@@ -5687,8 +5769,8 @@ MergeTreeData::PartsBackupEntries MergeTreeData::backupParts(
         {
             try
             {
-                checksums_.add(VectorIndex::getVectorIndexChecksums(part->getDataPartStoragePtr(), vec_desc.name));
-                files_without_checksums.insert(VectorIndex::getVectorIndexChecksumsFileName(vec_desc.name));
+                checksums_.add(AIDB::getVectorIndexChecksums(part->getDataPartStoragePtr(), vec_desc.name));
+                files_without_checksums.insert(AIDB::getVectorIndexChecksumsFileName(vec_desc.name));
             }
             catch(...)
             {

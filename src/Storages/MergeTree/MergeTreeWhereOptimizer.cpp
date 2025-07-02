@@ -14,7 +14,7 @@
 #include <Common/typeid_cast.h>
 #include <DataTypes/NestedUtils.h>
 #include <Interpreters/ActionsDAG.h>
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 #include <base/map.h>
 
 namespace DB
@@ -96,7 +96,8 @@ void MergeTreeWhereOptimizer::optimize(SelectQueryInfo & select_query_info, cons
     where_optimizer_context.is_final = select.final();
     where_optimizer_context.use_statistics = context->getSettingsRef().allow_statistics_optimize;
 
-    /// Move as much as possible where conditions to prewhere for vector / text / hybrid search function or full_text_search table function
+    /// As for vector / text / hybrid / sparse search function or full_text_search table function
+    /// Move as much as possible where conditions to prewhere
     if (!where_optimizer_context.move_all_conditions_to_prewhere && select_query_info.has_hybrid_search)
         where_optimizer_context.move_all_conditions_to_prewhere = context->getSettingsRef().optimize_move_to_prewhere_for_vector_search;
 
@@ -176,7 +177,7 @@ static void collectColumns(const RPNBuilderTreeNode & node, const NameSet & colu
 
     auto function_node = node.toFunctionNode();
 
-    /// Get function name for text / vector / hybrid search
+    /// Get function name for text / vector / hybrid / sparse search
     if (isHybridSearchFunc(function_node.getFunctionName()))
     {
         has_invalid_column = true;

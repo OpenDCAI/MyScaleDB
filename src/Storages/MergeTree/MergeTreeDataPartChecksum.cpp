@@ -8,6 +8,14 @@
 #include <Compression/CompressedReadBuffer.h>
 #include <Compression/CompressedWriteBuffer.h>
 #include <Storages/MergeTree/IDataPartStorage.h>
+
+#if USE_FTS_INDEX
+#    include <AIDB/Store/TantivyIndexStore.h>
+#endif
+#if USE_SPARSE_INDEX
+#    include <AIDB/Store/SparseIndexStore.h>
+#endif
+
 #include <Storages/MergeTree/GinIndexStore.h>
 #include <optional>
 
@@ -65,8 +73,15 @@ void MergeTreeDataPartChecksum::checkSize(const IDataPartStorage & storage, cons
     if (isGinFile(name))
         return;
 
-    if (name.ends_with(".data") || name.ends_with(".meta"))
+#if USE_FTS_INDEX
+    if (name.ends_with(TANTIVY_INDEX_META_FILE_SUFFIX) || name.ends_with(TANTIVY_INDEX_DATA_FILE_SUFFIX))
         return;
+#endif
+#if USE_SPARSE_INDEX
+    if (name.ends_with(SPARSE_INDEX_META_FILE_SUFFIX) || name.ends_with(SPARSE_INDEX_DATA_FILE_SUFFIX))
+        return;
+#endif
+
 
     if (!storage.exists(name))
         throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "{} doesn't exist", fs::path(storage.getRelativePath()) / name);
@@ -94,10 +109,16 @@ void MergeTreeDataPartChecksums::checkEqual(const MergeTreeDataPartChecksums & r
         /// Exclude files written by full-text index from check. No correct checksums are available for them currently.
         if (name.ends_with(".gin_dict") || name.ends_with(".gin_post") || name.ends_with(".gin_seg") || name.ends_with(".gin_sid"))
             continue;
-
+#if USE_FTS_INDEX
         /// Exclude files written by fts index from check. No correct checksums are available for them currently.
-        if (name.ends_with(".meta") || name.ends_with(".data"))
+        if (name.ends_with(TANTIVY_INDEX_META_FILE_SUFFIX) || name.ends_with(TANTIVY_INDEX_DATA_FILE_SUFFIX))
             continue;
+#endif
+#if USE_SPARSE_INDEX
+        /// Exclude files written by sparse index from check. No correct checksums are available for them currently.
+        if (name.ends_with(SPARSE_INDEX_META_FILE_SUFFIX) || name.ends_with(SPARSE_INDEX_DATA_FILE_SUFFIX))
+            continue;
+#endif
 
         auto it = rhs.files.find(name);
         if (it == rhs.files.end())

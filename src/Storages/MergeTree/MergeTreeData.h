@@ -688,8 +688,8 @@ public:
     void clearPartsFromFilesystem(const DataPartsVector & parts, bool throw_on_error = true, NameSet * parts_failed_to_delete = nullptr);
     void clearPKCache(const DataPartsVector & parts);
 
-#if USE_TANTIVY_SEARCH
-    void updateTantivyIndexCache();
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+    void startupCustomSkipIndexCache(CustomIndexType skip_index_type);
 #endif
 
     /// Delete all directories which names begin with "tmp"

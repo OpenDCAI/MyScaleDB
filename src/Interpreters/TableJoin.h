@@ -9,7 +9,8 @@
 #include <DataTypes/getLeastSupertype.h>
 #include <Interpreters/IKeyValueEntity.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
-#include <VectorIndex/Storages/VSDescription.h>
+#include <Interpreters/JoinInfo.h>
+#include <AIDB/Storages/VSDescription.h>
 
 #include <Common/Exception.h>
 #include <Parsers/IAST_fwd.h>
@@ -151,6 +152,10 @@ private:
     const size_t partial_merge_join_left_table_buffer_bytes = 0;
     const size_t max_files_to_merge = 0;
     const String temporary_files_codec = "LZ4";
+    const size_t output_by_rowlist_perkey_rows_threshold = 0;
+    const size_t sort_right_minimum_perkey_rows = 0;
+    const size_t sort_right_maximum_table_rows = 0;
+    const bool allow_join_sorting = false;
 
     /// Value if setting max_memory_usage for query, can be used when max_bytes_in_join is not specified.
     size_t max_memory_usage = 0;
@@ -163,8 +168,12 @@ private:
     std::shared_ptr<ExpressionActions> mixed_join_expression = nullptr;
 
     ASTTableJoin table_join;
+    std::optional<JoinInfo> join_info;
 
     ASOFJoinInequality asof_inequality = ASOFJoinInequality::GreaterOrEquals;
+
+    NamesAndTypesList columns_from_left_table;
+    NamesAndTypesList result_columns_from_left_table;
 
     /// All columns which can be read from joined table. Duplicating names are qualified.
     NamesAndTypesList columns_from_joined_table;
@@ -179,6 +188,8 @@ private:
     mutable TextSearchInfoPtr right_text_search_info;
     /// hybrid search info from joined table
     mutable HybridSearchInfoPtr right_hybrid_search_info;
+    /// sparse search info from joined table
+    mutable SparseSearchInfoPtr right_sparse_search_info;
 
     /// Target type to convert key columns before join
     NameToTypeMap left_type_map;
@@ -207,6 +218,8 @@ private:
     std::string right_storage_name;
 
     bool is_join_with_constant = false;
+
+    bool enable_analyzer = false;
 
     Names requiredJoinedNames() const;
 
@@ -249,27 +262,21 @@ public:
 
     /// for StorageJoin
     TableJoin(SizeLimits limits, bool use_nulls, JoinKind kind, JoinStrictness strictness,
-              const Names & key_names_right)
-        : size_limits(limits)
-        , default_max_bytes(0)
-        , join_use_nulls(use_nulls)
-        , join_algorithm({JoinAlgorithm::DEFAULT})
-    {
-        clauses.emplace_back().key_names_right = key_names_right;
-        table_join.kind = kind;
-        table_join.strictness = strictness;
-    }
+              const Names & key_names_right);
 
     TableJoin(const TableJoin & rhs) = default;
 
-    JoinKind kind() const { return table_join.kind; }
-    void setKind(JoinKind kind) { table_join.kind = kind; }
-    JoinStrictness strictness() const { return table_join.strictness; }
+    JoinKind kind() const;
+    void setKind(JoinKind kind);
+    JoinStrictness strictness() const;
     bool sameStrictnessAndKind(JoinStrictness, JoinKind) const;
     const SizeLimits & sizeLimits() const { return size_limits; }
     size_t getMaxMemoryUsage() const;
 
     VolumePtr getGlobalTemporaryVolume() { return tmp_volume; }
+
+    bool enableAnalyzer() const { return enable_analyzer; }
+    void assertEnableAnalyzer() const;
 
     TemporaryDataOnDiskScopePtr getTempDataOnDisk() { return tmp_data; }
 
@@ -288,6 +295,7 @@ public:
     }
 
     bool allowParallelHashJoin() const;
+    void swapSides();
 
     bool joinUseNulls() const { return join_use_nulls; }
 
@@ -305,6 +313,10 @@ public:
         return join_use_nulls && isRightOrFull(kind());
     }
 
+    size_t outputByRowListPerkeyRowsThreshold() const { return output_by_rowlist_perkey_rows_threshold; }
+    size_t sortRightMinimumPerkeyRows() const { return sort_right_minimum_perkey_rows; }
+    size_t sortRightMaximumTableRows() const { return sort_right_maximum_table_rows; }
+    bool allowJoinSorting() const { return allow_join_sorting; }
     size_t defaultMaxBytes() const { return default_max_bytes; }
     size_t maxJoinedBlockRows() const { return max_joined_block_rows; }
     size_t maxRowsInRightBlock() const { return partial_merge_join_rows_in_right_blocks; }
@@ -317,6 +329,8 @@ public:
 
     ASTTableJoin & getTableJoin() { return table_join; }
     const ASTTableJoin & getTableJoin() const { return table_join; }
+
+    void setJoinInfo(const JoinInfo & join_info_) { join_info = join_info_; }
 
     JoinOnClause & getOnlyClause() { assertHasOneOnExpr(); return clauses[0]; }
     const JoinOnClause & getOnlyClause() const { assertHasOneOnExpr(); return clauses[0]; }
@@ -351,8 +365,8 @@ public:
      */
     void addJoinCondition(const ASTPtr & ast, bool is_left);
 
-    bool hasUsing() const { return table_join.using_expression_list != nullptr; }
-    bool hasOn() const { return table_join.on_expression != nullptr; }
+    bool hasUsing() const;
+    bool hasOn() const;
 
     String getOriginalName(const String & column_name) const;
     NamesWithAliases getNamesWithAliases(const NameSet & required_columns) const;
@@ -374,6 +388,9 @@ public:
     bool leftBecomeNullable(const DataTypePtr & column_type) const;
     bool rightBecomeNullable(const DataTypePtr & column_type) const;
     void addJoinedColumn(const NameAndTypePair & joined_column);
+    void setUsedColumn(const NameAndTypePair & joind_column, JoinTableSide side);
+    void setUsedColumns(const Names & column_names);
+
     void setColumnsAddedByJoin(const NamesAndTypesList & columns_added_by_join_value)
     {
         columns_added_by_join = columns_added_by_join_value;
@@ -399,11 +416,17 @@ public:
     ASTPtr leftKeysList() const;
     ASTPtr rightKeysList() const; /// For ON syntax only
 
-    void setColumnsFromJoinedTable(NamesAndTypesList columns_from_joined_table_value, const NameSet & left_table_columns, const String & right_table_prefix)
+    void setColumnsFromJoinedTable(NamesAndTypesList columns_from_joined_table_value, const NameSet & left_table_columns, const String & right_table_prefix, const NamesAndTypesList & columns_from_left_table_)
     {
         columns_from_joined_table = std::move(columns_from_joined_table_value);
         deduplicateAndQualifyColumnNames(left_table_columns, right_table_prefix);
+        result_columns_from_left_table = columns_from_left_table_;
+        columns_from_left_table = columns_from_left_table_;
     }
+
+    void setInputColumns(NamesAndTypesList left_output_columns, NamesAndTypesList right_output_columns);
+    const NamesAndTypesList & getOutputColumns(JoinTableSide side);
+
     const NamesAndTypesList & columnsFromJoinedTable() const { return columns_from_joined_table; }
     const NamesAndTypesList & columnsAddedByJoin() const { return columns_added_by_join; }
 
@@ -429,7 +452,9 @@ public:
     void setStorageJoin(std::shared_ptr<const IKeyValueEntity> storage);
     void setStorageJoin(std::shared_ptr<StorageJoin> storage);
 
-    std::shared_ptr<StorageJoin> getStorageJoin() const { return right_storage_join; }
+    std::shared_ptr<StorageJoin> getStorageJoin() const {
+        return right_storage_join;
+    }
 
     bool isSpecialStorage() const { return !right_storage_name.empty() || right_storage_join || right_kv_storage; }
 
@@ -448,6 +473,10 @@ public:
     /// Used for hybrid search function
     HybridSearchInfoPtr getHybridSearchInfoPtr() const;
     void setHybridSearchInfoPtr(HybridSearchInfoPtr hybrid_search_info) const;
+
+    /// Used for sparse search function
+    SparseSearchInfoPtr getSparseSearchInfoPtr() const;
+    void setSparseSearchInfoPtr(SparseSearchInfoPtr sparse_search_info) const;
 };
 
 }

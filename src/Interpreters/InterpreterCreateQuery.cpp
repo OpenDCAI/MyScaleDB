@@ -55,8 +55,12 @@
 #include <Interpreters/GinFilter.h>
 #include <Interpreters/parseColumnsListForTableFunction.h>
 
-#if USE_TANTIVY_SEARCH
-#    include <Interpreters/TantivyFilter.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
 #endif
 
 #include <Access/Common/AccessRightsElement.h>
@@ -92,7 +96,7 @@
 #include <Interpreters/ReplaceQueryParameterVisitor.h>
 #include <Parsers/QueryParameterVisitor.h>
 
-#include <VectorIndex/Parsers/ASTVIDeclaration.h>
+#include <AIDB/Parsers/ASTVIDeclaration.h>
 
 namespace Search
 {
@@ -847,9 +851,14 @@ InterpreterCreateQuery::TableProperties InterpreterCreateQuery::getTableProperti
                 if (index_desc.type == "vector_similarity" && !settings.allow_experimental_vector_similarity_index)
                     throw Exception(ErrorCodes::INCORRECT_QUERY, "Vector similarity index is disabled. Turn on allow_experimental_vector_similarity_index");
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
                 if (index_desc.type == TANTIVY_INDEX_NAME && !settings.allow_experimental_inverted_index)
                     throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "Experimental fts Index feature is not enabled (the setting 'allow_experimental_inverted_index')");
+#endif
+
+#if USE_SPARSE_INDEX
+                if (index_desc.type == SPARSE_INDEX_NAME && !settings.allow_experimental_inverted_index)
+                    throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "Experimental sparse Index feature is not enabled (the setting 'allow_experimental_inverted_index')");
 #endif
                 properties.indices.push_back(index_desc);
             }

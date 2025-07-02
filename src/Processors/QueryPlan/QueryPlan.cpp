@@ -19,6 +19,7 @@
 
 #include <QueryPipeline/QueryPipelineBuilder.h>
 
+#include <Planner/Utils.h>
 
 namespace DB
 {
@@ -26,6 +27,7 @@ namespace DB
 namespace ErrorCodes
 {
     extern const int LOGICAL_ERROR;
+    extern const int NOT_FOUND_COLUMN_IN_BLOCK;
 }
 
 QueryPlan::QueryPlan() = default;
@@ -463,7 +465,7 @@ void QueryPlan::explainPipeline(WriteBuffer & buffer, const ExplainPipelineOptio
     }
 }
 
-static void updateDataStreams(QueryPlan::Node & root)
+[[maybe_unused]]static void updateDataStreams(QueryPlan::Node & root)
 {
     class UpdateDataStreams : public QueryPlanVisitor<UpdateDataStreams, false>
     {
@@ -498,18 +500,26 @@ static void updateDataStreams(QueryPlan::Node & root)
 
 void QueryPlan::optimize(const QueryPlanOptimizationSettings & optimization_settings)
 {
-    /// optimization need to be applied before "mergeExpressions" optimization
-    /// it removes redundant sorting steps, but keep underlying expressions,
-    /// so "mergeExpressions" optimization handles them afterwards
-    if (optimization_settings.remove_redundant_sorting)
-        QueryPlanOptimizations::tryRemoveRedundantSorting(root);
+    try
+    {
+        /// optimization need to be applied before "mergeExpressions" optimization
+        /// it removes redundant sorting steps, but keep underlying expressions,
+        /// so "mergeExpressions" optimization handles them afterwards
+        if (optimization_settings.remove_redundant_sorting)
+            QueryPlanOptimizations::tryRemoveRedundantSorting(root);
 
-    QueryPlanOptimizations::optimizeTreeFirstPass(optimization_settings, *root, nodes);
-    QueryPlanOptimizations::optimizeTreeSecondPass(optimization_settings, *root, nodes);
-    if (optimization_settings.build_sets)
-        QueryPlanOptimizations::addStepsToBuildSets(*this, *root, nodes);
-
-    updateDataStreams(*root);
+        QueryPlanOptimizations::optimizeTreeFirstPass(optimization_settings, *root, nodes);
+        QueryPlanOptimizations::optimizeTreeSecondPass(optimization_settings, *root, nodes);
+        if (optimization_settings.build_sets)
+            QueryPlanOptimizations::addStepsToBuildSets(*this, *root, nodes);
+        updateDataStreams(*root);
+    }
+    catch (Exception & e)
+    {
+        if (e.code() == ErrorCodes::NOT_FOUND_COLUMN_IN_BLOCK)
+            e.addMessage("while optimizing query plan:\n{}", dumpQueryPlan(*this));
+        throw;
+    }
 }
 
 void QueryPlan::explainEstimate(MutableColumns & columns)

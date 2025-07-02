@@ -26,7 +26,7 @@
 #include <Storages/ColumnsDescription.h>
 #include <Storages/IStorage_fwd.h>
 
-#include <VectorIndex/Storages/VSDescription.h>
+#include <AIDB/Storages/VSDescription.h>
 
 #include "config.h"
 
@@ -480,6 +480,7 @@ protected:
 
     mutable TextSearchInfoPtr right_text_search_info;
     mutable HybridSearchInfoPtr right_hybrid_search_info;
+    mutable SparseSearchInfoPtr right_sparse_search_info;
 
 public:
     /// Some counters for current query execution.
@@ -575,7 +576,8 @@ public:
     String getFilesystemCachesPath() const;
     String getFilesystemCacheUser() const;
     String getVectorIndexCachePath() const;
-    String getTantivyIndexCachePath() const;
+    String getTantivyIndexStorePath() const;
+    String getSparseIndexStorePath() const;
 
     /// A list of warnings about server configuration to place in `system.warnings` table.
     Strings getWarnings() const;
@@ -595,7 +597,8 @@ public:
     void setDictionariesLibPath(const String & path);
     void setUserScriptsPath(const String & path);
     void setVectorIndexCachePath(const String & path);
-    void setTantivyIndexCachePath(const String & path);
+    void setTantivyIndexStorePath(const String & path);
+    void setSparseIndexStorePath(const String & path);
 
     void addWarningMessage(const String & msg) const;
     void addWarningMessageAboutDatabaseOrdinary(const String & database_name) const;
@@ -1387,6 +1390,11 @@ public:
     HybridSearchInfoPtr getHybridSearchInfo() const;
     void setHybridSearchInfo(HybridSearchInfoPtr hybrid_search_info) const;
     void resetHybridSearchInfo() const;
+
+    /// Used for sparse search functions
+    SparseSearchInfoPtr getSparseSearchInfo() const;
+    void setSparseSearchInfo(SparseSearchInfoPtr sparse_search_info) const;
+    void resetSparseSearchInfo() const;
 
 private:
     std::shared_ptr<const SettingsConstraintsAndProfileIDs> getSettingsConstraintsAndCurrentProfilesWithLock() const;

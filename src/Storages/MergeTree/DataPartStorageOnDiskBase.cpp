@@ -15,7 +15,7 @@
 #include <Disks/SingleDiskVolume.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/IMergeTreeDataPart.h>
-#include <VectorIndex/Common/VICommon.h>
+#include <AIDB/Common/VICommon.h>
 
 namespace DB
 {

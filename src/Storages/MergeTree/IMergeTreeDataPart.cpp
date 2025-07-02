@@ -4,7 +4,6 @@
 
 #include <exception>
 #include <optional>
-#include <string_view>
 #include <regex>
 #include <Compression/CompressedReadBuffer.h>
 #include <Compression/getCompressionCodecForFile.h>
@@ -42,11 +41,11 @@
 
 #include <Disks/IO/CachedOnDiskReadBufferFromFile.h>
 
-#include <VectorIndex/Cache/PKCacheManager.h>
-#include <VectorIndex/Interpreters/VIEventLog.h>
-#include <VectorIndex/Common/Segment.h>
-#include <VectorIndex/Common/SegmentsMgr.h>
-#include <VectorIndex/Utils/VIUtils.h>
+#include <AIDB/Cache/PKCacheManager.h>
+#include <AIDB/Interpreters/VIEventLog.h>
+#include <AIDB/Common/Segment.h>
+#include <AIDB/Common/SegmentsMgr.h>
+#include <AIDB/Utils/VIUtils.h>
 
 namespace CurrentMetrics
 {
@@ -319,7 +318,7 @@ IMergeTreeDataPart::IMergeTreeDataPart(
     , name(mutable_name)
     , info(info_)
     , index_granularity_info(storage_, part_type_)
-    , segments_mgr(std::make_unique<VectorIndex::SegmentsMgr>(*this))
+    , segments_mgr(std::make_unique<AIDB::SegmentsMgr>(*this))
     , part_type(part_type_)
     , parent_part(parent_part_)
     , parent_part_name(parent_part ? parent_part->name : "")
@@ -1008,7 +1007,7 @@ NameSet IMergeTreeDataPart::getFileNamesWithoutChecksums(bool include_vector_fil
     /// Get vector index files
     if (include_vector_files)
     {
-        for (auto file_name : VectorIndex::getAllValidVectorIndexFileNames(*this))
+        for (auto file_name : AIDB::getAllValidVectorIndexFileNames(*this))
             result.emplace(file_name);
     }
 
@@ -1719,7 +1718,7 @@ void IMergeTreeDataPart::convertIndexFileForRestore()
 
     for (auto const & vec_index_desc : metadata_snapshot->getVectorIndices())
     {
-        String checksums_filename = VectorIndex::getVectorIndexChecksumsFileName(vec_index_desc.name);
+        String checksums_filename = AIDB::getVectorIndexChecksumsFileName(vec_index_desc.name);
         if (!getDataPartStorage().exists(checksums_filename))
             continue;
 
@@ -1851,7 +1850,7 @@ void IMergeTreeDataPart::onLightweightDelete(const String index_name) const
     bool update_all_indices = index_name.empty() ? true : false;
 
     /// Store deleted row ids
-    VectorIndex::VIBitmapPtr del_bitmap = nullptr;
+    AIDB::VIBitmapPtr del_bitmap = nullptr;
 
     /// Store deleted row ids
     std::vector<UInt64> del_row_ids;
@@ -1875,7 +1874,7 @@ void IMergeTreeDataPart::onLightweightDelete(const String index_name) const
 
         if (del_bitmap == nullptr)
         {
-            del_bitmap = std::make_shared<VectorIndex::VIBitmap>(rows_count, true);
+            del_bitmap = std::make_shared<AIDB::VIBitmap>(rows_count, true);
             if (del_row_ids.empty())
             {
                 del_row_ids = getDeleteBitmapFromRowExists();
@@ -2219,20 +2218,47 @@ void IMergeTreeDataPart::remove()
 
     GinIndexStoreFactory::instance().remove(getDataPartStoragePtr()->getRelativePath());
 
-#if USE_TANTIVY_SEARCH
-
-    auto metadata = storage.getInMemoryMetadataPtr();
-    if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
     {
-        auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
-        LOG_INFO(
-            storage.log,
-            "try remove part {}, part_rel_path: {}, will update FTS store map",
-            getNameWithState(),
-            getDataPartStoragePtr()->getRelativePath());
-        size_t removed = TantivyIndexStoreFactory::instance().remove(getDataPartStoragePtr()->getRelativePath(), index_names);
-        if (removed == 0)
-            TantivyIndexFilesManager::removeDataPartInCache(getDataPartStoragePtr()->getRelativePath());
+        auto metadata = storage.getInMemoryMetadataPtr();
+
+        if (metadata->hasSecondaryIndices())
+        {
+#if USE_FTS_INDEX
+            if (metadata->getSecondaryIndices().hasFTS())
+            {
+                auto all_fts_index_names = metadata->getSecondaryIndices().getAllFTSNames();
+
+                LOG_INFO(
+                    storage.log,
+                    "try remove part {}, part_rel_path: {}, will update FTS store map",
+                    getNameWithState(),
+                    getDataPartStoragePtr()->getRelativePath());
+                size_t removed = TantivyIndexFactory::instance().remove(getDataPartStoragePtr()->getRelativePath(), all_fts_index_names);
+                // `removed==0` means that index cache doesn't managed by IndexStore.
+                if (removed == 0)
+                    StoreDirectoryHelper::removePartRelativePathInStoreForward(
+                        getDataPartStoragePtr()->getRelativePath(), CustomIndexType::TantivyIndex);
+            }
+#endif
+#if USE_SPARSE_INDEX
+            if (metadata->getSecondaryIndices().hasSparse())
+            {
+                auto all_sparse_index_names = metadata->getSecondaryIndices().getAllSparseNames();
+
+                LOG_INFO(
+                    storage.log,
+                    "try remove part {}, part_rel_path: {}, will update Sparse store map",
+                    getNameWithState(),
+                    getDataPartStoragePtr()->getRelativePath());
+                size_t removed = SparseIndexFactory::instance().remove(getDataPartStoragePtr()->getRelativePath(), all_sparse_index_names);
+                // `removed==0` means that index cache doesn't managed by IndexStore.
+                if (removed == 0)
+                    StoreDirectoryHelper::removePartRelativePathInStoreForward(
+                        getDataPartStoragePtr()->getRelativePath(), CustomIndexType::SparseIndex);
+            }
+#endif
+        }
     }
 #endif
 

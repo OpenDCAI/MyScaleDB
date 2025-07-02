@@ -3,7 +3,7 @@
 #include <Parsers/ASTCreateIndexQuery.h>
 #include <Parsers/ASTIndexDeclaration.h>
 #include <Parsers/ASTAlterQuery.h>
-#include <VectorIndex/Parsers/ASTVIDeclaration.h>
+#include <AIDB/Parsers/ASTVIDeclaration.h>
 
 
 namespace DB

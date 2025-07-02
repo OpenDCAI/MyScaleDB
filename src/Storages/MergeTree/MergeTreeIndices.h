@@ -17,11 +17,13 @@
 
 #include "config.h"
 
-#if USE_TANTIVY_SEARCH
-#    include <Storages/MergeTree/TantivyIndexStore.h>
-#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Factory/TantivyIndexFactory.h>
 #endif
 
+#if USE_SPARSE_INDEX
+#    include <AIDB/Factory/SparseIndexFactory.h>
+#endif
 
 constexpr auto INDEX_FILE_PREFIX = "skp_idx_";
 
@@ -180,8 +182,15 @@ struct IMergeTreeIndex
         return createIndexAggregator(settings);
     }
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     virtual MergeTreeIndexAggregatorPtr createIndexAggregatorForPart([[maybe_unused]] TantivyIndexStorePtr & /*store*/, const MergeTreeWriterSettings & settings) const
+    {
+        return createIndexAggregator(settings);
+    }
+#endif
+
+#if USE_SPARSE_INDEX
+    virtual MergeTreeIndexAggregatorPtr createIndexAggregatorForPart([[maybe_unused]] SparseIndexStorePtr & store, const MergeTreeWriterSettings & settings) const
     {
         return createIndexAggregator(settings);
     }
@@ -262,8 +271,13 @@ void legacyVectorSimilarityIndexValidator(const IndexDescription & index, bool a
 MergeTreeIndexPtr fullTextIndexCreator(const IndexDescription & index);
 void fullTextIndexValidator(const IndexDescription & index, bool attach);
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 MergeTreeIndexPtr ftsIndexCreator(const IndexDescription & index);
 void ftsIndexValidator(const IndexDescription & index, bool attach);
+#endif
+
+#if USE_SPARSE_INDEX
+MergeTreeIndexPtr sparseIndexCreator(const IndexDescription & index);
+void sparseIndexValidator(const IndexDescription & index, bool attach);
 #endif
 }

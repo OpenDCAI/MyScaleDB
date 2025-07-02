@@ -157,6 +157,27 @@ public:
             return static_cast<double>(samples[left_index]) * left_coef + static_cast<double>(samples[right_index]) * right_coef;
     }
 
+    double quantileAvgLatency()
+    {
+        if (samples.empty())
+        {
+            if (DB::is_decimal<T>)
+                return 0;
+            return onEmpty<double>();
+        }
+
+        double total_latency = 0.0;
+        for (size_t i = 0; i < samples.size(); ++i)
+        {
+            if constexpr (DB::is_decimal<T>)
+                total_latency += static_cast<double>(samples[i].value);
+            else
+                total_latency += static_cast<double>(samples[i]);
+        }
+        
+        return total_latency / samples.size();
+    }
+
     void merge(const ReservoirSampler<T, OnEmpty> & b)
     {
         if (sample_count != b.sample_count)

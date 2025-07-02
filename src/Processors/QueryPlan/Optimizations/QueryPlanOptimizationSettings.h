@@ -67,6 +67,11 @@ struct QueryPlanOptimizationSettings
     /// If remove-redundant-distinct-steps optimization is enabled.
     bool remove_redundant_distinct = true;
 
+    /// If we can swap probe/build tables in join
+    /// true/false - always/never swap
+    /// nullopt - swap if it's beneficial
+    bool join_swap_table = false;
+
     bool optimize_prewhere = true;
 
     /// If reading from projection can be applied
@@ -76,6 +81,8 @@ struct QueryPlanOptimizationSettings
     bool optimize_use_implicit_projections = false;
 
     bool build_sets = true;
+
+    bool keep_logical_steps = false;
 
     static QueryPlanOptimizationSettings fromSettings(const Settings & from);
     static QueryPlanOptimizationSettings fromContext(ContextPtr from);

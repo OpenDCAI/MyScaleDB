@@ -30,9 +30,9 @@
 #include <base/sort.h>
 #include <random>
 
-#include <VectorIndex/Common/SegmentsMgr.h>
-#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
-#include <VectorIndex/Utils/VIUtils.h>
+#include <AIDB/Common/SegmentsMgr.h>
+#include <AIDB/Common/StorageVectorIndicesMgr.h>
+#include <AIDB/Utils/VIUtils.h>
 
 namespace fs = std::filesystem;
 
@@ -199,12 +199,12 @@ void Service::processQuery(const HTMLForm & params, ReadBuffer & /*body*/, Write
 
             /// Get vector files from part.
             auto vi_status = part->segments_mgr->getSegmentStatus(vec_index_name);
-            if (vi_status > VectorIndex::SegmentStatus::BUILT)
+            if (vi_status > AIDB::SegmentStatus::BUILT)
             {
                 LOG_DEBUG(log, "The vector index {} build in part {} was cancelled or failed with error, cannot send it", vec_index_name, part_name);
                 response.addCookie({"vector_index_build_status", "fail"});
             }
-            else if (vi_status <= VectorIndex::SegmentStatus::BUILDING)
+            else if (vi_status <= AIDB::SegmentStatus::BUILDING)
             {
                 LOG_WARNING(log, "The vector index {} in part {} was not ready, cannot send it", vec_index_name, part_name);
                 response.addCookie({"vector_index_build_status", "not_ready"});
@@ -508,7 +508,7 @@ MergeTreeData::DataPart::Checksums Service::sendVectorIndexFromDisk(
     /// We'll add a list of vector index files with .vidx postfix.
     /// Get file names for specified vector index.
     auto data_part_storage = part->getDataPartStoragePtr();
-    auto vector_index_files_to_replicate = VectorIndex::getVectorIndexFileNamesInChecksums(data_part_storage, vec_index_name, true);
+    auto vector_index_files_to_replicate = AIDB::getVectorIndexFileNamesInChecksums(data_part_storage, vec_index_name, true);
 
     IDataPartStorage::ReplicatedFilesDescription replicated_description;
 
@@ -1028,7 +1028,7 @@ String Fetcher::fetchVectorIndex(
     if (build_status == "fail")
     {
         LOG_DEBUG(log, "Unable to fetch vector index {} in part {} due to build status is fail", vec_index_name, future_part_name);
-        future_part->segments_mgr->setSegmentStatus(vec_index_name, VectorIndex::SegmentStatus::ERROR, "Another replica failed to build the vector index.");
+        future_part->segments_mgr->setSegmentStatus(vec_index_name, AIDB::SegmentStatus::ERROR, "Another replica failed to build the vector index.");
         return {};
     }
     else if (build_status == "no_need")
@@ -1036,7 +1036,7 @@ String Fetcher::fetchVectorIndex(
         /// The merged part covering this part doesn't exist in this replica.
         LOG_DEBUG(log, "No need to fetch vector index {} in part {} due to it is covered by merged part in replica",
                   vec_index_name, future_part_name);
-        future_part->segments_mgr->setSegmentStatus(vec_index_name, VectorIndex::SegmentStatus::CANCELLED, "No need to fetch vector index.");
+        future_part->segments_mgr->setSegmentStatus(vec_index_name, AIDB::SegmentStatus::CANCELLED, "No need to fetch vector index.");
         return {};
     }
     else if (build_status == "not_ready")

@@ -41,7 +41,7 @@
 #include <ctime>
 #include <numeric>
 
-#include <VectorIndex/Common/VectorIndicesMgr.h>
+#include <AIDB/Common/VectorIndicesMgr.h>
 #include <boost/algorithm/string/replace.hpp>
 
 

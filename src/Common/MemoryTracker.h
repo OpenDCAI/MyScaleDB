@@ -258,6 +258,14 @@ public:
     void logPeakMemoryUsage();
 
     void debugLogBigAllocationWithoutCheck(Int64 size [[maybe_unused]]);
+
+    /// Check if the memory allocation would exceed the soft or hard limit ratio
+    /// @param size - The size of memory to be allocated
+    /// @param ratio - The ratio threshold (0.0 to 1.0)
+    /// @param check_soft_limit - Whether to check against soft limit
+    /// @param check_hard_limit - Whether to check against hard limit
+    /// @return true if the allocation would exceed the ratio threshold, false otherwise
+    bool checkMemoryLimitRatio(Int64 size, double ratio, bool check_soft_limit, bool check_hard_limit) const;
 };
 
 extern MemoryTracker total_memory_tracker;

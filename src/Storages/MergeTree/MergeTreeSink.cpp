@@ -7,7 +7,7 @@
 #include <Core/Settings.h>
 
 
-#include <VectorIndex/Common/SegmentsMgr.h>
+#include <AIDB/Common/SegmentsMgr.h>
 
 namespace ProfileEvents
 {

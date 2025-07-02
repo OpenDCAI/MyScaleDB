@@ -19,7 +19,9 @@
 #include <IO/AzureBlobStorage/isRetryableAzureException.h>
 #include <Poco/Net/NetException.h>
 
-#include <VectorIndex/Common/VICommon.h>
+#include <AIDB/Common/VICommon.h>
+#include <AIDB/Store/TantivyIndexStore.h>
+#include <AIDB/Store/SparseIndexStore.h>
 
 
 namespace CurrentMetrics
@@ -265,9 +267,16 @@ static IMergeTreeDataPart::Checksums checkDataPart(
         if (isGinFile(file_name))
             continue;
 
+#if USE_FTS_INDEX
         /// Exclude files written by fts index from check. No correct checksums are available for them currently.
-        if (file_name.ends_with(".data") || file_name.ends_with(".meta"))
+        if (file_name.ends_with(TANTIVY_INDEX_DATA_FILE_SUFFIX) || file_name.ends_with(TANTIVY_INDEX_META_FILE_SUFFIX))
             continue;
+#endif
+#if USE_SPARSE_INDEX
+        /// Exclude files written by sparse index from check. No correct checksums are available for them currently.
+        if (file_name.ends_with(SPARSE_INDEX_DATA_FILE_SUFFIX) || file_name.ends_with(SPARSE_INDEX_META_FILE_SUFFIX))
+            continue;
+#endif
 
         /// Exclude vector index files to prevent conflicts with newly built vector indexes
         if (file_name.ends_with(VECTOR_INDEX_FILE_SUFFIX))

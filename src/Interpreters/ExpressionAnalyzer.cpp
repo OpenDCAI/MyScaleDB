@@ -76,8 +76,12 @@
 #include <Interpreters/misc.h>
 #include <Interpreters/PreparedSets.h>
 
-#if USE_TANTIVY_SEARCH
-#    include <Interpreters/TantivyFilter.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
 #endif
 
 #include <IO/Operators.h>
@@ -90,11 +94,11 @@
 
 #include <Common/logger_useful.h>
 
-#include <VectorIndex/Common/VICommon.h>
-#include <VectorIndex/Interpreters/GetHybridSearchVisitor.h>
-#include <VectorIndex/Interpreters/parseVSParameters.h>
-#include <VectorIndex/Utils/VIUtils.h>
-#include <VectorIndex/Utils/HybridSearchUtils.h>
+#include <AIDB/Common/VICommon.h>
+#include <AIDB/Interpreters/GetHybridSearchVisitor.h>
+#include <AIDB/Interpreters/parseVSParameters.h>
+#include <AIDB/Utils/VIUtils.h>
+#include <AIDB/Utils/HybridSearchUtils.h>
 #include <AggregateFunctions/parseAggregateFunctionParameters.h>
 
 namespace DB
@@ -113,6 +117,7 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
     extern const int UNKNOWN_IDENTIFIER;
     extern const int UNKNOWN_TYPE_OF_AST_NODE;
+    extern const int ILLEGAL_SPARSE_SEARCH;
 }
 
 namespace
@@ -141,7 +146,7 @@ LoggerPtr getLogger() { return ::getLogger("ExpressionAnalyzer"); }
 inline void checkTantivyIndex([[maybe_unused]]const StorageSnapshotPtr & storage_snapshot, [[maybe_unused]]const String & text_column_name)
 {
     bool find_tantivy_index = false;
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     if (storage_snapshot && storage_snapshot->metadata)
     {
         auto metadata_snapshot = storage_snapshot->metadata;
@@ -168,7 +173,32 @@ inline void checkTantivyIndex([[maybe_unused]]const StorageSnapshotPtr & storage
     }
 }
 
-std::pair<String, bool> getVectorIndexTypeAndParameterCheck(const StorageMetadataPtr & metadata_snapshot, ContextPtr context, String & search_column_name)
+inline void checkSparseIndex([[maybe_unused]] const StorageSnapshotPtr & storage_snapshot, [[maybe_unused]] const String & sparse_column_name)
+{
+    bool find_sparse_index = false;
+#if USE_SPARSE_INDEX
+    if (storage_snapshot && storage_snapshot->metadata)
+    {
+        auto metadata_snapshot = storage_snapshot->metadata;
+
+        for (const auto & index_desc : metadata_snapshot->getSecondaryIndices())
+        {
+            /// Find sparse index on the search column
+            if (index_desc.type == SPARSE_INDEX_NAME && index_desc.column_names.size() == 1 && index_desc.column_names[0] == sparse_column_name)
+            {
+                find_sparse_index = true;
+                break;
+            }
+        }
+    }
+#endif
+    if (!find_sparse_index)
+    {
+        throw Exception(ErrorCodes::ILLEGAL_SPARSE_SEARCH, "The column {} has no sparse index for sparse search", sparse_column_name);
+    }
+}
+
+std::pair<String, bool> getVectorIndexTypeAndParameterCheck(const StorageMetadataPtr & metadata_snapshot, ContextPtr context, String & search_column_name, String & search_index_name)
 {
     auto log = getLogger();
     String index_type = "";
@@ -180,18 +210,49 @@ std::pair<String, bool> getVectorIndexTypeAndParameterCheck(const StorageMetadat
     /// Obtain the type of the vector index recorded in the meta_data.
     if (metadata_snapshot)
     {
-        /// Support multiple vector indices
-        /// Find vector index description in metadata based on search column name.
-        for (auto & vec_index_desc : metadata_snapshot->getVectorIndices())
+        /// Support multiple vector indices on a vector column
+        /// If search index name is specified, find the vector index description by the index name
+        if (!search_index_name.empty())
         {
-            if (vec_index_desc.column == search_column_name)
+            bool search_index_exists = false;
+            for (auto & vec_index_desc : metadata_snapshot->getVectorIndices())
             {
-                index_type = vec_index_desc.type;
-                LOG_TRACE(log, "The vector index type used for the query is `{}`", Poco::toUpper(index_type));
+                if (vec_index_desc.name == search_index_name)
+                {
+                    /// Valid check for search index name and column name
+                    if (vec_index_desc.column == search_column_name)
+                    {
+                        index_type = vec_index_desc.type;
+                        search_index_exists = true;
+                        break;
+                    }
+                    else
+                        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The vector column `{}` doesn't have a vector index with name `{}`",
+                                            search_column_name, search_index_name);
+                }
+            }
 
-                break;
+            if (!search_index_exists)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The vector index with name `{}` doesn't exist", search_index_name);
+        }
+        else
+        {
+            /// Find vector index description in metadata based on search column name.
+            /// If not specified (search_index_name is empty), use the most recently created vector index.
+            const auto & vec_indices = metadata_snapshot->getVectorIndices();
+            for (auto it = vec_indices.rbegin(); it != vec_indices.rend(); ++it)
+            {
+                if (it->column == search_column_name)
+                {
+                    search_index_name = it->name; /// Save vector index name
+                    index_type = it->type;
+                    break;
+                }
             }
         }
+
+        if (!index_type.empty())
+            LOG_TRACE(log, "The vector index type used for the query is `{}`", Poco::toUpper(index_type));
 
         /// If not found, brute force search will be used.
     }
@@ -228,11 +289,11 @@ void getAndCheckVectorScanInfoFromMetadata(
     if (metadata_snapshot)
     {
         /// vector column dim
-        vector_scan_desc.search_column_dim = VectorIndex::getVectorDimension(vector_scan_desc.vector_search_type, *metadata_snapshot, vector_scan_desc.search_column_name);
+        vector_scan_desc.search_column_dim = AIDB::getVectorDimension(vector_scan_desc.vector_search_type, *metadata_snapshot, vector_scan_desc.search_column_name);
         checkVectorDimension(vector_scan_desc.vector_search_type, vector_scan_desc.search_column_dim);
 
         /// Parameter check
-        std::pair<String, bool> res = getVectorIndexTypeAndParameterCheck(metadata_snapshot, context, vector_scan_desc.search_column_name);
+        std::pair<String, bool> res = getVectorIndexTypeAndParameterCheck(metadata_snapshot, context, vector_scan_desc.search_column_name, vector_scan_desc.search_index_name);
 
         /// parse vector scan's params, such as: top_k, n_probe ...
         String param_str = parseVectorScanParameters(vector_scan_desc.parameters, Poco::toUpper(res.first), res.second);
@@ -329,7 +390,14 @@ ExpressionAnalyzer::ExpressionAnalyzer(
 
     analyzeHybridSearch(temp_actions);
     analyzeVectorScan(temp_actions);
+
+#if USE_FTS_INDEX
     analyzeTextSearch(temp_actions);
+#endif
+
+#if USE_SPARSE_INDEX
+    analyzeSparseSearch(temp_actions);
+#endif
 }
 
 NamesAndTypesList ExpressionAnalyzer::getColumnsAfterArrayJoin(ActionsDAG & actions, const NamesAndTypesList & src_columns)
@@ -616,6 +684,28 @@ void ExpressionAnalyzer::analyzeTextSearch(ActionsDAG & temp_actions)
     /// Skip the fts index check when table is distributed.
     if (!syntax->is_remote_storage && has_text_search)
         checkTantivyIndex(syntax->storage_snapshot, text_search_info->text_column_name);
+}
+
+void ExpressionAnalyzer::analyzeSparseSearch(ActionsDAG & temp_actions)
+{
+    if (syntax->search_func_type == HybridSearchFuncType::SPARSE_SEARCH && !syntax->hybrid_search_funcs.empty())
+    {
+        has_sparse_search = makeSparseSearchInfo(temp_actions);
+    }
+    else if (auto right_sparse_search_info = getContext()->getSparseSearchInfo())
+    {
+        if (syntax->storage_snapshot)
+        {
+            LOG_DEBUG(getLogger(), "[analyzeSparseSearch] Get sparse search function from right table");
+            sparse_search_info = right_sparse_search_info;
+            has_sparse_search = true;
+        }
+    }
+
+    /// Sparse search cannot be performed when no sparse index exists
+    /// Skip the sparse index check when table is distributed.
+    if (!syntax->is_remote_storage && has_sparse_search)
+        checkSparseIndex(syntax->storage_snapshot, sparse_search_info->sparse_column_name);
 }
 
 void ExpressionAnalyzer::analyzeHybridSearch(ActionsDAG & temp_actions)
@@ -906,8 +996,58 @@ bool ExpressionAnalyzer::makeVectorScanDescriptions(ActionsDAG & actions)
                                         static_cast<int>(syntax->limit_length), syntax->vector_scan_metric_types[i], syntax->vector_search_types[i]);
 
         /// Save parameters, parse and check parameters will be done in analyzeVectorScan()
-        vector_scan_desc.parameters = (node->parameters) ? getAggregateFunctionParametersArray(node->parameters, "", getContext()) : Array();
-        LOG_DEBUG(getLogger(), "[makeVectorScanDescriptions] create vector scan function: {}, column name:{}", node->name, node->getColumnName());
+        Array parameters = (node->parameters) ? getAggregateFunctionParametersArray(node->parameters, "", getContext()) : Array();
+
+        /// Extract index_name parameter if exists, save it to search_index_name in description and remove it from parameters.
+        FieldVector vec_search_parameters;
+        String search_index_name; /// Save index name in parameters
+
+        for (const auto & arg : parameters)
+        {
+            LOG_DEBUG(getLogger(), "parameter field: {}", toString(arg));
+            if (arg.getType() == Field::Types::String)
+            {
+                String param_str = arg.safeGet<String>();
+                LOG_DEBUG(getLogger(), "parameter string: {}", param_str);
+                if (param_str.find("index_name") != std::string::npos)
+                {
+                    auto pos = param_str.find('=');
+                    if (pos == std::string::npos || pos == 0 || pos == param_str.length())
+                        throw Exception(ErrorCodes::ILLEGAL_VECTOR_SCAN, "The parameter {} inside {} function should be key-value format string, separated by `=`.", node->name, param_str);
+
+                    String param_key = param_str.substr(0, pos);
+                    String param_value = param_str.substr(pos + 1);
+                    LOG_DEBUG(getLogger(), "param_key: {}, param_value: {}", param_key, param_value);
+                    if (param_key == "index_name")
+                    {
+                        if (search_index_name.empty())
+                            search_index_name = param_value;
+                        else
+                            throw Exception(ErrorCodes::ILLEGAL_VECTOR_SCAN, "Multiple {} parameters in the {} function.", param_key, node->getColumnName());
+
+                        continue;
+                    }
+                }
+            }
+            /// Add parameter to vec_search_parameters
+            vec_search_parameters.emplace_back(arg);
+        }
+
+        vector_scan_desc.parameters = Array(vec_search_parameters.size());
+        for (size_t k = 0; k < vec_search_parameters.size(); ++k)
+            vector_scan_desc.parameters[k] = vec_search_parameters[k];
+
+        if (search_index_name.empty())
+            LOG_DEBUG(getLogger(), "[makeVectorScanDescriptions] create vector scan function: {}, column name: {}", node->name, node->getColumnName());
+        else
+        {
+            LOG_DEBUG(getLogger(), "[makeVectorScanDescriptions] create vector scan function: {}, column name: {}, index name: {}",
+                        node->name, node->getColumnName(), search_index_name);
+
+            /// Don't save index_name to vector scan description for distributed tables which don't have indexes defined.
+            if (!syntax->is_remote_storage)
+                vector_scan_desc.search_index_name = search_index_name;
+        }
 
         vector_scan_descriptions.push_back(vector_scan_desc);
     }
@@ -1075,6 +1215,150 @@ bool ExpressionAnalyzer::makeTextSearchInfo(ActionsDAG & actions)
     return text_search_info != nullptr;
 }
 
+/// create sparse search info, used by SparseSearch
+SparseSearchInfoPtr ExpressionAnalyzer::commonMakeSparseSearchInfo(
+    const String & search_name,
+    const String & function_col_name,
+    ASTPtr query_column,
+    ASTPtr query_sparse,
+    int topk,
+    const Array & parameters)
+{
+    String sparse_column_name;
+    if (auto * identifier = query_column->as<ASTIdentifier>())
+        sparse_column_name = identifier->shortName();
+    else
+        sparse_column_name = query_column->getColumnName();
+
+    std::unordered_map<UInt32, Float32> query_sparse_vector;
+
+    /// The query sparse vector only can be created by map or mapFromArrays function
+    /// Execute the ASTFunction to get the query sparse vector column
+    if (query_sparse->as<ASTFunction>())
+    {
+        Block temp_block = {{DataTypeUInt8().createColumnConst(1, 0), std::make_shared<DataTypeUInt8>(), "_dummy"}};
+        ColumnPtr query_sparse_column;
+        try
+        {
+            auto function_ast = query_sparse->clone();
+            auto syntax_result = TreeRewriter(getContext()).analyze(function_ast, {{"_dummy", std::make_shared<DataTypeUInt8>()}});
+            auto tmp_actions = ExpressionAnalyzer(function_ast, syntax_result, getContext()).getActions(false);
+
+            tmp_actions->execute(temp_block, false);
+            auto query_sparse_column_with_type = temp_block.findByName(query_sparse->getColumnName());
+
+            if (!isColumnConst(*query_sparse_column_with_type->column))
+                throw Exception(
+                    ErrorCodes::BAD_ARGUMENTS,
+                    "Wrong const query sparse vector type for argument {} in SparseSearch function",
+                    query_sparse->getColumnName());
+
+            const ColumnConst * query_sparse_column_const = assert_cast<const ColumnConst *>(query_sparse_column_with_type->column.get());
+            query_sparse_column = query_sparse_column_const->getDataColumnPtr();
+        }
+        catch (...)
+        {
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "An exception occurred while executing the argument {} in SparseSearch function",
+                query_sparse->getColumnName());
+        }
+
+        const ColumnMap * map_column = checkAndGetColumn<ColumnMap>(query_sparse_column.get());
+
+        if (!map_column)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong query sparse vector type in SparseSearch function, expected const Map type.");
+
+        const ColumnTuple & nested_data = map_column->getNestedData();
+        const auto & key_column = nested_data.getColumn(0);
+        const auto & val_column = nested_data.getColumn(1);
+
+        WhichDataType key_type(key_column.getDataType());
+        WhichDataType val_type(val_column.getDataType());
+        if ((key_type.isUInt8() || key_type.isUInt16() || key_type.isUInt32()) && val_type.isFloat())
+        {
+            for (size_t i = 0; i < key_column.size(); ++i)
+            {
+                query_sparse_vector[static_cast<UInt32>(key_column.getUInt(i))] = val_column.getFloat32(i);
+            }
+        }
+        else
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong query sparse vector type in SparseSearch function, expected const Map<UInt32, Float32> type.");
+    }
+    else
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong query sparse vector type in SparseSearch function, expected const Map type.");
+
+    LOG_DEBUG(
+        getLogger(),
+        "[commonMakeSparseSearchInfo] sparse search_column: {}, query_column: {}",
+        sparse_column_name,
+        query_sparse->getColumnName());
+
+    SparseSearchInfo::SearchMode search_mode;
+    for (const auto & arg : parameters)
+    {
+        if (arg.getType() != Field::Types::String)
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "All parameters inside {} function must be key-value format string, separated by `=`.",
+                search_name);
+
+        String param_str = arg.safeGet<String>();
+        auto pos = param_str.find('=');
+        if (pos == std::string::npos || pos == 0 || pos == param_str.length())
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "The parameter {} inside {} function should be key-value format string, separated by `=`.",
+                param_str,
+                search_name);
+
+        String param_key = param_str.substr(0, pos);
+        String param_value = param_str.substr(pos + 1);
+
+        if (param_key == "search_mode")
+        {
+            search_mode = SparseSearchInfo::strToSparseMode(param_value);
+        }
+        else
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown parameter {} for SparseSearch", param_key);
+    }
+
+    return std::make_shared<SparseSearchInfo>(sparse_column_name, query_sparse_vector, function_col_name, topk, search_mode);
+}
+
+bool ExpressionAnalyzer::makeSparseSearchInfo(ActionsDAG & actions)
+{
+    if (hybrid_search_funcs().size() == 1 && hybrid_search_funcs()[0])
+    {
+        const ASTFunction * node = hybrid_search_funcs()[0];
+
+        const ASTs & arguments = node->arguments ? node->arguments->children : ASTs();
+        if (arguments.size() != 2)
+        {
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS, "Wrong argument number in SparseSearch function: expected 2, got {}", arguments.size());
+        }
+
+        Array parameters = (node->parameters) ? getAggregateFunctionParametersArray(node->parameters, "", getContext()) : Array();
+
+        /// Only need actions for the second argument, the first argument is used for search index.
+        getRootActionsNoMakeSet(arguments[1], actions);
+
+        auto tmp_sparse_search_info = commonMakeSparseSearchInfo(
+            "SparseSearch", node->getColumnName(), arguments[0], arguments[1], static_cast<int>(syntax->limit_length), parameters);
+        LOG_DEBUG(getLogger(), "[makeSparseSearchInfo] create sparse search function: {}", node->name);
+
+        if (syntax->hybrid_search_from_right_table)
+        {
+            analyzedJoin().setSparseSearchInfoPtr(tmp_sparse_search_info);
+        }
+        else
+            sparse_search_info = tmp_sparse_search_info;
+    }
+
+    return sparse_search_info != nullptr;
+}
+
 /// create hybrid search info, mainly record the column name and parameters
 bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
 {
@@ -1092,6 +1376,7 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
         std::unordered_map<String, String> hybrid_parameters_map;
         std::vector<String> vector_scan_parameter;
         std::vector<String> text_search_parameters;
+        String vector_scan_index_name;
         for (const auto & arg : parameters)
         {
             if (arg.getType() != Field::Types::String)
@@ -1117,7 +1402,11 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
             }
             else if (param_key.find(vector_scan_parameter_prefix) == 0)
             {
-                vector_scan_parameter.push_back(param_str.substr(std::strlen(vector_scan_parameter_prefix)));
+                /// Extract index_name parameter for vector scan if exists
+                if (param_key.find("index_name") != std::string::npos)
+                    vector_scan_index_name = param_value;
+                else
+                    vector_scan_parameter.push_back(param_str.substr(std::strlen(vector_scan_parameter_prefix)));
             }
             else if (param_key == "enable_nlq" || param_key == "operator")
             {
@@ -1166,6 +1455,10 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
 
                 vector_scan_desc.parameters = params_array;
             }
+
+            /// Save vector scan index name
+            if (!vector_scan_index_name.empty())
+                vector_scan_desc.search_index_name = vector_scan_index_name;
 
             vector_scan_descriptions.push_back(vector_scan_desc);
         }
@@ -1734,6 +2027,14 @@ static std::unique_ptr<QueryPlan> buildJoinedPlan(
        context->setHybridSearchInfo(hybrid_search_info);
     }
 
+    /// Add sparse search info to Context for subquery of joined table
+    bool has_sparse_search = false;
+    if (auto sparse_search_info = analyzed_join.getSparseSearchInfoPtr())
+    {
+        has_sparse_search = true;
+        context->setSparseSearchInfo(sparse_search_info);
+    }
+
     /// Actions which need to be calculated on joined block.
     auto joined_block_actions = analyzed_join.createJoinedBlockActions(context);
     NamesWithAliases required_columns_with_aliases = analyzed_join.getRequiredColumns(
@@ -1785,6 +2086,8 @@ static std::unique_ptr<QueryPlan> buildJoinedPlan(
         context->resetTextSearchInfo();
     else if (has_hybrid_search)
         context->resetHybridSearchInfo();
+    else if (has_sparse_search)
+        context->resetSparseSearchInfo();
 
     return joined_plan;
 }
@@ -2553,6 +2856,7 @@ ExpressionAnalysisResult::ExpressionAnalysisResult(
     , need_vector_scan(query_analyzer.hasVectorScan())
     , need_text_search(query_analyzer.hasTextSearch())
     , need_hybrid_search(query_analyzer.hasHybridSearch())
+    , need_sparse_search(query_analyzer.hasSparseSearch())
     , has_window(query_analyzer.hasWindow())
     , use_grouping_set_key(query_analyzer.useGroupingSetKey())
 {

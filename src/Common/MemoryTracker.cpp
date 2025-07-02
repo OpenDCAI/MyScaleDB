@@ -593,6 +593,32 @@ bool MemoryTracker::isSizeOkForSampling(UInt64 size) const
     return ((max_allocation_size_bytes == 0 || size <= max_allocation_size_bytes) && size >= min_allocation_size_bytes);
 }
 
+bool MemoryTracker::checkMemoryLimitRatio(Int64 size, double ratio, bool check_soft_limit = true, bool check_hard_limit = true) const
+{
+    if (ratio <= 0.0 || ratio > 1.0)
+        throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Invalid ratio value: {}. Must be between 0.0 and 1.0", ratio);
+
+    Int64 current_amount = amount.load(std::memory_order_relaxed);
+    Int64 will_be = current_amount + size;
+
+    if (check_soft_limit)
+    {
+        Int64 soft_limit_value = soft_limit.load(std::memory_order_relaxed);
+        // LOG_INFO(getLogger("MemoryTracker"), "will_be: {}, soft_limit_value: {}", will_be, soft_limit_value);
+        if (soft_limit_value > 0 && static_cast<double>(will_be) / soft_limit_value > ratio)
+            return true;
+    }
+
+    if (check_hard_limit)
+    {
+        Int64 hard_limit_value = hard_limit.load(std::memory_order_relaxed);
+        if (hard_limit_value > 0 && static_cast<double>(will_be) / hard_limit_value > ratio)
+            return true;
+    }
+
+    return false;
+}
+
 void MemoryTracker::setParent(MemoryTracker * elem)
 {
     /// Untracked memory shouldn't be accounted to a query or a user if it was allocated before the thread was attached

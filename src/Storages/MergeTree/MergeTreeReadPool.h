@@ -7,7 +7,7 @@
 #include <Storages/SelectQueryInfo.h>
 #include <Storages/MergeTree/AlterConversions.h>
 
-#include <VectorIndex/Storages/MergeTreeVSManager.h>
+#include <AIDB/Storages/MergeTreeVSManager.h>
 
 #include <mutex>
 

@@ -49,11 +49,11 @@
 #include <IO/WriteIntText.h>
 #include <Storages/MergeTree/MergeTreeDataPartChecksum.h>
 #include <Storages/MergeTree/MergeTreeReadTask.h>
-#include <VectorIndex/Cache/VICacheManager.h>
-#include <VectorIndex/Utils/VIUtils.h>
-#include <VectorIndex/Common/SegmentsMgr.h>
-#include <VectorIndex/Common/Segment.h>
-#include <VectorIndex/Storages/MergeTreeWithVectorScanSource.h>
+#include <AIDB/Cache/VICacheManager.h>
+#include <AIDB/Utils/VIUtils.h>
+#include <AIDB/Common/SegmentsMgr.h>
+#include <AIDB/Common/Segment.h>
+#include <AIDB/Storages/MergeTreeWithVectorScanSource.h>
 #include <Common/ActionBlocker.h>
 #include <Common/logger_useful.h>
 
@@ -464,7 +464,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
             {
                 auto & part = global_ctx->future_part->parts[i];
                 auto vi_status = part->segments_mgr->getSegmentStatus(vec_index.name);
-                if (vi_status == VectorIndex::SegmentStatus::BUILT)
+                if (vi_status == AIDB::SegmentStatus::BUILT)
                     num_parts_with_vector_index++;
                 
                 if (part->rows_count == 0)
@@ -809,7 +809,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::generateRowIdsMap()
 
         /// inverted_row_ids_map file write buffer
         global_ctx->inverted_row_ids_map_uncompressed_buf = global_ctx->new_data_part->getDataPartStorage().writeFile(
-            global_ctx->inverted_row_ids_map_file_path, 4096, global_ctx->context->getWriteSettings());
+            fileName(global_ctx->inverted_row_ids_map_file_path), 4096, global_ctx->context->getWriteSettings());
         global_ctx->inverted_row_ids_map_buf = std::make_unique<CompressedWriteBuffer>(*global_ctx->inverted_row_ids_map_uncompressed_buf);
 
         /// row_ids_map file write buffers
@@ -818,7 +818,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::generateRowIdsMap()
         for (const auto & row_ids_map_file : global_ctx->row_ids_map_files)
         {
             auto row_ids_map_uncompressed_buf
-                = global_ctx->new_data_part->getDataPartStorage().writeFile(row_ids_map_file, 4096, global_ctx->context->getWriteSettings());
+                = global_ctx->new_data_part->getDataPartStorage().writeFile(fileName(row_ids_map_file), 4096, global_ctx->context->getWriteSettings());
             global_ctx->row_ids_map_bufs.emplace_back(std::make_unique<CompressedWriteBuffer>(*row_ids_map_uncompressed_buf));
             global_ctx->row_ids_map_uncompressed_bufs.emplace_back(std::move(row_ids_map_uncompressed_buf));
         }
@@ -896,7 +896,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::generateRowIdsMap()
                 if (i > 0)
                 {
                     /// Support multiple vector indices
-                    VectorIndex::VIBitmapPtr delete_bit_map = std::make_shared<VectorIndex::VIBitmap>(partRowNum, true);
+                    AIDB::VIBitmapPtr delete_bit_map = std::make_shared<AIDB::VIBitmap>(partRowNum, true);
                     for (size_t row_id : deleteRowIds)
                     {
                         if (row_id)
@@ -1395,7 +1395,7 @@ bool MergeTask::MergeProjectionsStage::finalizeProjectionsAndWholeMerge() const
         String inverted_row_sources_file_path
             = global_ctx->new_data_part->getDataPartStorage().getFullPath() + "merged-inverted_row_sources_map" + VECTOR_INDEX_FILE_SUFFIX;
         auto inverted_row_sources_map_uncompressed_buf = global_ctx->new_data_part->getDataPartStorage().writeFile(
-            inverted_row_sources_file_path, 4096, global_ctx->context->getWriteSettings());
+            fileName(inverted_row_sources_file_path), 4096, global_ctx->context->getWriteSettings());
         auto inverted_row_sources_map_buf = std::make_unique<CompressedWriteBuffer>(*inverted_row_sources_map_uncompressed_buf);
 
         DB::copyData(*rows_sources_read_buf, *inverted_row_sources_map_buf);
@@ -1436,7 +1436,7 @@ bool MergeTask::MergeProjectionsStage::finalizeProjectionsAndWholeMerge() const
                 vector_index_checksums.addFile(filename_, file_size_, hash_);
             
             /// write new part decoupled vector index checksums file
-            VectorIndex::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vector_index_name, vector_index_checksums);
+            AIDB::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vector_index_name, vector_index_checksums);
         }
     }
     else if (global_ctx->only_one_vpart_merged)
@@ -1459,7 +1459,7 @@ bool MergeTask::MergeProjectionsStage::finalizeProjectionsAndWholeMerge() const
                     global_ctx->new_data_part);
 
                 /// write new part vector index checksums file
-                VectorIndex::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vec_index.name, index_checksums);
+                AIDB::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vec_index.name, index_checksums);
             }
         }
     }

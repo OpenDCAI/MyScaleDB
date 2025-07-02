@@ -46,7 +46,7 @@
 #include "base/defines.h"
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeFixedString.h>
-#include <VectorIndex/Common/VICommon.h>
+#include <AIDB/Common/VICommon.h>
 
 namespace Search
 {

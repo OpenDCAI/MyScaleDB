@@ -16,8 +16,12 @@
 #include <Core/Defines.h>
 #include "Common/Exception.h"
 
-#if USE_TANTIVY_SEARCH
-#    include <Interpreters/TantivyFilter.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
 #endif
 
 namespace DB
@@ -212,7 +216,7 @@ Names IndicesDescription::getAllRegisteredNames() const
     return result;
 }
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 bool IndicesDescription::hasFTS() const
 {
     for (const auto & index : *this)
@@ -223,6 +227,46 @@ bool IndicesDescription::hasFTS() const
         }
     }
     return false;
+}
+
+Names IndicesDescription::getAllFTSNames() const
+{
+    Names result;
+    for (const auto & index : *this)
+    {
+        if (index.type == TANTIVY_INDEX_NAME)
+        {
+            result.emplace_back(index.name);
+        }
+    }
+    return result;
+}
+#endif
+
+#if USE_SPARSE_INDEX
+bool IndicesDescription::hasSparse() const
+{
+    for (const auto & index : *this)
+    {
+        if (index.type == SPARSE_INDEX_NAME)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+Names IndicesDescription::getAllSparseNames() const
+{
+    Names result;
+    for (const auto & index : *this)
+    {
+        if (index.type == SPARSE_INDEX_NAME)
+        {
+            result.emplace_back(index.name);
+        }
+    }
+    return result;
 }
 #endif
 }

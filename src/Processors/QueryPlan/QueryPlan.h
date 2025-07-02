@@ -12,6 +12,9 @@
 namespace DB
 {
 
+class Block;
+using Header = Block;
+
 class DataStream;
 
 class IQueryPlanStep;
