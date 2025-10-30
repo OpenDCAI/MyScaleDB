@@ -59,6 +59,7 @@ FusionSortingStep::FusionSortingStep(
     UInt64 limit_,
     UInt64 num_candidates_,
     String fusion_type_,
+    std::vector<HybridSearchFuncType> search_func_list_,
     UInt64 fusion_k_,
     Float32 fusion_weight_,
     Int8 distance_score_order_direction_)
@@ -67,6 +68,7 @@ FusionSortingStep::FusionSortingStep(
     , limit(limit_)
     , num_candidates(num_candidates_)
     , fusion_type(fusion_type_)
+    , search_func_list(search_func_list_)
     , fusion_k(fusion_k_)
     , fusion_weight(fusion_weight_)
     , distance_score_order_direction(distance_score_order_direction_)
@@ -86,7 +88,7 @@ void FusionSortingStep::updateOutputStream()
 void FusionSortingStep::transformPipeline(QueryPipelineBuilder & pipeline, const BuildQueryPipelineSettings &)
 {
     auto fusion_transform = std::make_shared<HybridSearchFusionTransform>(
-        pipeline.getHeader(), num_candidates, fusion_type, fusion_k, fusion_weight, distance_score_order_direction);
+        pipeline.getHeader(), num_candidates, fusion_type, search_func_list, fusion_k, fusion_weight, distance_score_order_direction);
     pipeline.addTransform(std::move(fusion_transform));
 
     auto sort_transform = std::make_shared<PartialSortingTransform>(pipeline.getHeader(), result_description);

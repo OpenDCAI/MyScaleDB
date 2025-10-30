@@ -63,7 +63,7 @@ bool checkIsBrokenTimeout()
 
 SocketImpl::SocketImpl():
 	_sockfd(POCO_INVALID_SOCKET),
-	_blocking(true), 
+	_blocking(true),
 	_isBrokenTimeout(checkIsBrokenTimeout())
 {
 }
@@ -82,7 +82,7 @@ SocketImpl::~SocketImpl()
 	close();
 }
 
-	
+
 SocketImpl* SocketImpl::acceptConnection(SocketAddress& clientAddr)
 {
 	if (_sockfd == POCO_INVALID_SOCKET) throw InvalidSocketException();
@@ -118,7 +118,7 @@ void SocketImpl::connect(const SocketAddress& address)
 		rc = ::connect(_sockfd, address.addr(), address.length());
 	}
 	while (rc != 0 && lastError() == POCO_EINTR);
-	if (rc != 0) 
+	if (rc != 0)
 	{
 		int err = lastError();
 		error(err, address.toString());
@@ -205,7 +205,7 @@ void SocketImpl::bind6(const SocketAddress& address, bool reuseAddress, bool reu
 #if defined(POCO_HAVE_IPv6)
 	if (address.family() != SocketAddress::IPv6)
 		throw Poco::InvalidArgumentException("SocketAddress must be an IPv6 address");
-		
+
 	if (_sockfd == POCO_INVALID_SOCKET)
 	{
 		init(address.af());
@@ -226,7 +226,7 @@ void SocketImpl::bind6(const SocketAddress& address, bool reuseAddress, bool reu
 #endif
 }
 
-	
+
 void SocketImpl::listen(int backlog)
 {
 	if (_sockfd == POCO_INVALID_SOCKET) throw InvalidSocketException();
@@ -254,7 +254,7 @@ void SocketImpl::shutdownReceive()
 	if (rc != 0) error();
 }
 
-	
+
 void SocketImpl::shutdownSend()
 {
 	if (_sockfd == POCO_INVALID_SOCKET) throw InvalidSocketException();
@@ -263,7 +263,7 @@ void SocketImpl::shutdownSend()
 	if (rc != 0) error();
 }
 
-	
+
 void SocketImpl::shutdown()
 {
 	if (_sockfd == POCO_INVALID_SOCKET) throw InvalidSocketException();
@@ -318,7 +318,7 @@ int SocketImpl::receiveBytes(void* buffer, int length, int flags)
 				throw TimeoutException();
 		}
 	}
-	
+
 	int rc;
 	do
 	{
@@ -326,7 +326,7 @@ int SocketImpl::receiveBytes(void* buffer, int length, int flags)
 		rc = ::recv(_sockfd, reinterpret_cast<char*>(buffer), length, flags);
 	}
 	while (blocking && rc < 0 && lastError() == POCO_EINTR);
-	if (rc < 0) 
+	if (rc < 0)
 	{
 		int err = lastError();
 		if ((err == POCO_EAGAIN || err == POCO_EWOULDBLOCK) && !blocking)
@@ -451,7 +451,7 @@ bool SocketImpl::pollImpl(Poco::Timespan& remainingTime, int mode)
 	}
 	while (rc < 0 && lastError() == POCO_EINTR);
 	if (rc < 0) error();
-	return rc > 0; 
+	return rc > 0;
 
 #else
 
@@ -494,7 +494,7 @@ bool SocketImpl::pollImpl(Poco::Timespan& remainingTime, int mode)
 	}
 	while (rc < 0 && errorCode == POCO_EINTR);
 	if (rc < 0) error(errorCode);
-	return rc > 0; 
+	return rc > 0;
 
 #endif // POCO_HAVE_FD_POLL
 }

@@ -31,7 +31,6 @@
 #include <Common/quoteString.h>
 
 #include <AIDB/Common/VICommon.h>
-#include <AIDB/Interpreters/parseVSParameters.h>
 #include <AIDB/Parsers/ASTVIDeclaration.h>
 #include <AIDB/Storages/VIDescriptions.h>
 

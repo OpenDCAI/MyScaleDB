@@ -32,6 +32,7 @@ public:
     /// remove all vector index cached files in nvme disk
     void startup() override
     {
+        clearVectorNvmeCache();
     }
     void shutdown() override 
     {
@@ -50,6 +51,7 @@ public:
     StorageReplicatedVectorIndicesMgr(StorageReplicatedMergeTree & data_);
     void startup() override
     {
+        clearVectorNvmeCache(getPreloadVectorIndicesFromZK());
     }
 
     void shutdown() override

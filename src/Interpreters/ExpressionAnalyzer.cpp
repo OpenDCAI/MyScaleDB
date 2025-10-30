@@ -76,14 +76,6 @@
 #include <Interpreters/misc.h>
 #include <Interpreters/PreparedSets.h>
 
-#if USE_FTS_INDEX
-#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
-#endif
-
-#if USE_SPARSE_INDEX
-#    include <AIDB/Storages/MergeTreeIndexSparse.h>
-#endif
-
 #include <IO/Operators.h>
 #include <IO/WriteBufferFromString.h>
 
@@ -96,8 +88,8 @@
 
 #include <AIDB/Common/VICommon.h>
 #include <AIDB/Interpreters/GetHybridSearchVisitor.h>
-#include <AIDB/Interpreters/parseVSParameters.h>
 #include <AIDB/Utils/VIUtils.h>
+#include <AIDB/Utils/VSUtils.h>
 #include <AIDB/Utils/HybridSearchUtils.h>
 #include <AggregateFunctions/parseAggregateFunctionParameters.h>
 
@@ -117,7 +109,7 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
     extern const int UNKNOWN_IDENTIFIER;
     extern const int UNKNOWN_TYPE_OF_AST_NODE;
-    extern const int ILLEGAL_SPARSE_SEARCH;
+    extern const int SYNTAX_ERROR;
 }
 
 namespace
@@ -142,175 +134,6 @@ bool allowEarlyConstantFolding(const ActionsDAG & actions, const Settings & sett
 }
 
 LoggerPtr getLogger() { return ::getLogger("ExpressionAnalyzer"); }
-
-inline void checkTantivyIndex([[maybe_unused]]const StorageSnapshotPtr & storage_snapshot, [[maybe_unused]]const String & text_column_name)
-{
-    bool find_tantivy_index = false;
-#if USE_FTS_INDEX
-    if (storage_snapshot && storage_snapshot->metadata)
-    {
-        auto metadata_snapshot = storage_snapshot->metadata;
-
-        for (const auto & index_desc : metadata_snapshot->getSecondaryIndices())
-        {
-            /// Find tantivy inverted index on the search column
-            if (index_desc.type == TANTIVY_INDEX_NAME)
-            {
-                auto & column_names = index_desc.column_names;
-                /// Support search on a column in a multi-columns index
-                if (std::find(column_names.begin(), column_names.end(), text_column_name) != column_names.end())
-                {
-                    find_tantivy_index = true;
-                    break;
-                }
-            }
-        }
-    }
-#endif
-    if (!find_tantivy_index)
-    {
-        throw Exception(ErrorCodes::ILLEGAL_TEXT_SEARCH, "The column {} has no fts index for text search", text_column_name);
-    }
-}
-
-inline void checkSparseIndex([[maybe_unused]] const StorageSnapshotPtr & storage_snapshot, [[maybe_unused]] const String & sparse_column_name)
-{
-    bool find_sparse_index = false;
-#if USE_SPARSE_INDEX
-    if (storage_snapshot && storage_snapshot->metadata)
-    {
-        auto metadata_snapshot = storage_snapshot->metadata;
-
-        for (const auto & index_desc : metadata_snapshot->getSecondaryIndices())
-        {
-            /// Find sparse index on the search column
-            if (index_desc.type == SPARSE_INDEX_NAME && index_desc.column_names.size() == 1 && index_desc.column_names[0] == sparse_column_name)
-            {
-                find_sparse_index = true;
-                break;
-            }
-        }
-    }
-#endif
-    if (!find_sparse_index)
-    {
-        throw Exception(ErrorCodes::ILLEGAL_SPARSE_SEARCH, "The column {} has no sparse index for sparse search", sparse_column_name);
-    }
-}
-
-std::pair<String, bool> getVectorIndexTypeAndParameterCheck(const StorageMetadataPtr & metadata_snapshot, ContextPtr context, String & search_column_name, String & search_index_name)
-{
-    auto log = getLogger();
-    String index_type = "";
-    /// Obtain the default value of the `use_parameter_check` in the MergeTreeSetting.
-    std::unique_ptr<MergeTreeSettings> storage_settings = std::make_unique<MergeTreeSettings>(context->getMergeTreeSettings());
-    bool use_parameter_check = storage_settings->vector_index_parameter_check;
-    LOG_TRACE(log, "vector_index_parameter_check value in MergeTreeSetting: {}", use_parameter_check);
-
-    /// Obtain the type of the vector index recorded in the meta_data.
-    if (metadata_snapshot)
-    {
-        /// Support multiple vector indices on a vector column
-        /// If search index name is specified, find the vector index description by the index name
-        if (!search_index_name.empty())
-        {
-            bool search_index_exists = false;
-            for (auto & vec_index_desc : metadata_snapshot->getVectorIndices())
-            {
-                if (vec_index_desc.name == search_index_name)
-                {
-                    /// Valid check for search index name and column name
-                    if (vec_index_desc.column == search_column_name)
-                    {
-                        index_type = vec_index_desc.type;
-                        search_index_exists = true;
-                        break;
-                    }
-                    else
-                        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The vector column `{}` doesn't have a vector index with name `{}`",
-                                            search_column_name, search_index_name);
-                }
-            }
-
-            if (!search_index_exists)
-                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The vector index with name `{}` doesn't exist", search_index_name);
-        }
-        else
-        {
-            /// Find vector index description in metadata based on search column name.
-            /// If not specified (search_index_name is empty), use the most recently created vector index.
-            const auto & vec_indices = metadata_snapshot->getVectorIndices();
-            for (auto it = vec_indices.rbegin(); it != vec_indices.rend(); ++it)
-            {
-                if (it->column == search_column_name)
-                {
-                    search_index_name = it->name; /// Save vector index name
-                    index_type = it->type;
-                    break;
-                }
-            }
-        }
-
-        if (!index_type.empty())
-            LOG_TRACE(log, "The vector index type used for the query is `{}`", Poco::toUpper(index_type));
-
-        /// If not found, brute force search will be used.
-    }
-
-    /// Use the user-defined `vector_index_parameter_check`.
-    if (metadata_snapshot && metadata_snapshot->hasSettingsChanges())
-    {
-        const auto current_changes = metadata_snapshot->getSettingsChanges()->as<const ASTSetQuery &>().changes;
-        for (const auto & changed_setting : current_changes)
-        {
-            const auto & setting_name = changed_setting.name;
-            const auto & new_value = changed_setting.value;
-            if (setting_name == "vector_index_parameter_check")
-            {
-                use_parameter_check = new_value.safeGet<bool>();
-                LOG_TRACE(
-                    log, "vector_index_parameter_check value in sql definition: {}", use_parameter_check);
-                break;
-            }
-        }
-    }
-
-    return std::make_pair(index_type, use_parameter_check);
-}
-
-/// Fill in dim and recognize VectorSearchType from metadata
-void getAndCheckVectorScanInfoFromMetadata(
-    const StorageSnapshotPtr & storage_snapshot,
-    VSDescription & vector_scan_desc,
-    ContextPtr context)
-{
-    auto metadata_snapshot = storage_snapshot ? storage_snapshot->metadata : nullptr;
-
-    if (metadata_snapshot)
-    {
-        /// vector column dim
-        vector_scan_desc.search_column_dim = AIDB::getVectorDimension(vector_scan_desc.vector_search_type, *metadata_snapshot, vector_scan_desc.search_column_name);
-        checkVectorDimension(vector_scan_desc.vector_search_type, vector_scan_desc.search_column_dim);
-
-        /// Parameter check
-        std::pair<String, bool> res = getVectorIndexTypeAndParameterCheck(metadata_snapshot, context, vector_scan_desc.search_column_name, vector_scan_desc.search_index_name);
-
-        /// parse vector scan's params, such as: top_k, n_probe ...
-        String param_str = parseVectorScanParameters(vector_scan_desc.parameters, Poco::toUpper(res.first), res.second);
-        if (!param_str.empty())
-        {
-            try
-            {
-                Poco::JSON::Parser json_parser;
-                vector_scan_desc.vector_parameters = json_parser.parse(param_str).extract<Poco::JSON::Object::Ptr>();
-            }
-            catch ([[maybe_unused]] const std::exception & e)
-            {
-                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The input JSON's format is illegal");
-            }
-        }
-    }
-}
 
 }
 
@@ -655,12 +478,35 @@ void ExpressionAnalyzer::analyzeVectorScan(ActionsDAG & temp_actions)
             has_vector_scan = true;
         }
     }
+
     /// Fill in dim and recognize VectorSearchType from metadata
-    if (has_vector_scan)
+    /// Skip when table is distributed because no vector index defined
+    if (has_vector_scan && !syntax->is_remote_storage)
     {
         /// Support multiple distance functions
+        int direction = 0;
         for (auto & vector_scan_desc : vector_scan_descriptions)
-            getAndCheckVectorScanInfoFromMetadata(syntax->storage_snapshot, vector_scan_desc, getContext());
+        {
+            if (syntax->storage_snapshot)
+                getAndCheckVectorScanInfoFromMetadata(syntax->storage_snapshot->metadata, vector_scan_desc, getContext());
+
+            /// Not allow different directions in multiple distance functions
+            if (direction == 0)
+                direction = vector_scan_desc.direction;
+            else if (direction != vector_scan_desc.direction)
+                throw Exception(ErrorCodes::SYNTAX_ERROR, "Not allowed metric types with different result order in multiple distances");
+        }
+
+        /// When metric_type = IP in definition of vector index, order by must be DESC.
+        /// Skip the check when table is distributed or query has multiple distance functions
+        if (vector_scan_descriptions.size() == 1)
+        {
+            bool is_batch = isBatchDistance(vector_scan_descriptions[0].column_name);
+            String func_name = is_batch ? "batch_distance" : "distance";
+            const auto * select_query = query->as<ASTSelectQuery>();
+
+            checkOrderBySortDirection(func_name, select_query, direction, is_batch);
+        }
     }
 }
 
@@ -682,8 +528,8 @@ void ExpressionAnalyzer::analyzeTextSearch(ActionsDAG & temp_actions)
 
     /// Text search cannot be performed when no fts index exists
     /// Skip the fts index check when table is distributed.
-    if (!syntax->is_remote_storage && has_text_search)
-        checkTantivyIndex(syntax->storage_snapshot, text_search_info->text_column_name);
+    if (!syntax->is_remote_storage && has_text_search && syntax->storage_snapshot)
+        checkTantivyIndex(syntax->storage_snapshot->metadata, text_search_info->text_column_name);
 }
 
 void ExpressionAnalyzer::analyzeSparseSearch(ActionsDAG & temp_actions)
@@ -704,8 +550,8 @@ void ExpressionAnalyzer::analyzeSparseSearch(ActionsDAG & temp_actions)
 
     /// Sparse search cannot be performed when no sparse index exists
     /// Skip the sparse index check when table is distributed.
-    if (!syntax->is_remote_storage && has_sparse_search)
-        checkSparseIndex(syntax->storage_snapshot, sparse_search_info->sparse_column_name);
+    if (!syntax->is_remote_storage && has_sparse_search && syntax->storage_snapshot)
+        checkSparseIndex(syntax->storage_snapshot->metadata, sparse_search_info->sparse_column_name);
 }
 
 void ExpressionAnalyzer::analyzeHybridSearch(ActionsDAG & temp_actions)
@@ -722,25 +568,24 @@ void ExpressionAnalyzer::analyzeHybridSearch(ActionsDAG & temp_actions)
         }
     }
 
-    if (has_hybrid_search && hybrid_search_info)
+    if (has_hybrid_search && hybrid_search_info && !syntax->is_remote_storage && syntax->storage_snapshot)
     {
+        auto metadata_snapshot = syntax->storage_snapshot->metadata;
+
         /// Skip the fts index check when table is distributed.
-        if (!syntax->is_remote_storage && hybrid_search_info->text_search_info)
-            checkTantivyIndex(syntax->storage_snapshot, hybrid_search_info->text_search_info->text_column_name);
+        if (hybrid_search_info->text_search_info)
+            checkTantivyIndex(metadata_snapshot, hybrid_search_info->text_search_info->text_column_name);
+
+        /// Skip the sparse index check when table is distributed.
+        if (hybrid_search_info->sparse_search_info)
+            checkSparseIndex(metadata_snapshot, hybrid_search_info->sparse_search_info->sparse_column_name);
 
         /// Get vector search type and dim from metadata, check paramaters in vector scan and add to vector_parameters
-        VSDescription & vec_scan_desc =
-                const_cast<VSDescription &>(hybrid_search_info->vector_scan_info->vector_scan_descs[0]);
-
-        getAndCheckVectorScanInfoFromMetadata(syntax->storage_snapshot, vec_scan_desc, getContext());
-
-/*        /// Initialize metric type in hybrid search info
-        if (isRelativeScoreFusion(hybrid_search_info->fusion_type))
+        if (hybrid_search_info->vector_scan_info)
         {
-            auto & mutable_metric_type = const_cast<Search::Metric &>(hybrid_search_info->metric_type);
-            mutable_metric_type = Search::getMetricType(vector_scan_metric_type, vec_scan_desc.vector_search_type);
+            VSDescription & vec_scan_desc = const_cast<VSDescription &>(hybrid_search_info->vector_scan_info->vector_scan_descs[0]);
+            getAndCheckVectorScanInfoFromMetadata(metadata_snapshot, vec_scan_desc, getContext());
         }
-*/
     }
 }
 
@@ -891,6 +736,19 @@ void ExpressionAnalyzer::makeAggregateDescriptions(ActionsDAG & actions, Aggrega
     }
 }
 
+int ExpressionAnalyzer::LimitTopKBySettings(int topk)
+{
+    const auto & settings_ref = getContext()->getSettingsRef();
+    if (topk <= 0)
+        /// Use the value from default if topk is not specified,
+        return AIDB::DEFAULT_TOPK;
+    else if (topk > settings_ref.max_topk_for_index_search)
+        /// Use the value from settings if topk is larger than max_topk_for_index_search
+        return settings_ref.max_topk_for_index_search;
+
+    return topk;
+}
+
 /// create vector scan description, used by HybridSearch and VectorScan
 VSDescription ExpressionAnalyzer::commonMakeVectorScanDescription(
     ActionsDAG & actions,
@@ -898,7 +756,6 @@ VSDescription ExpressionAnalyzer::commonMakeVectorScanDescription(
     ASTPtr query_column,
     ASTPtr query_vector,
     int topk,
-    String vector_scan_metric_type,
     Search::DataType vector_search_type)
 {
     VSDescription vector_scan_desc;
@@ -967,10 +824,7 @@ VSDescription ExpressionAnalyzer::commonMakeVectorScanDescription(
     vector_scan_desc.vector_search_type = vector_search_type;
 
     /// top_k is get from limit N
-    vector_scan_desc.topk = topk;
-
-    /// Pass the correct direction to vector_scan_desc according to metric_type
-    vector_scan_desc.direction = Poco::toUpper(vector_scan_metric_type) == "IP" ? -1 : 1;
+    vector_scan_desc.topk = LimitTopKBySettings(topk);
 
     return vector_scan_desc;
 }
@@ -991,9 +845,6 @@ bool ExpressionAnalyzer::makeVectorScanDescriptions(ActionsDAG & actions)
         }
 
         getRootActionsNoMakeSet(node->arguments, actions);
-
-        auto vector_scan_desc = commonMakeVectorScanDescription(actions, node->getColumnName(), arguments[0], arguments[1],
-                                        static_cast<int>(syntax->limit_length), syntax->vector_scan_metric_types[i], syntax->vector_search_types[i]);
 
         /// Save parameters, parse and check parameters will be done in analyzeVectorScan()
         Array parameters = (node->parameters) ? getAggregateFunctionParametersArray(node->parameters, "", getContext()) : Array();
@@ -1032,6 +883,9 @@ bool ExpressionAnalyzer::makeVectorScanDescriptions(ActionsDAG & actions)
             /// Add parameter to vec_search_parameters
             vec_search_parameters.emplace_back(arg);
         }
+
+        auto vector_scan_desc = commonMakeVectorScanDescription(actions, node->getColumnName(), arguments[0], arguments[1],
+                                        static_cast<int>(syntax->limit_length), syntax->vector_search_types[i]);
 
         vector_scan_desc.parameters = Array(vec_search_parameters.size());
         for (size_t k = 0; k < vec_search_parameters.size(); ++k)
@@ -1181,7 +1035,7 @@ TextSearchInfoPtr ExpressionAnalyzer::commonMakeTextSearchInfo(
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown parameter {} for TextSearch", param_key);
     }
 
-    return std::make_shared<TextSearchInfo>(text_column_name, query_text_value, function_col_name, topk, text_operator, enable_natural_language_query);
+    return std::make_shared<TextSearchInfo>(text_column_name, query_text_value, function_col_name, LimitTopKBySettings(topk), text_operator, enable_natural_language_query);
 }
 
 bool ExpressionAnalyzer::makeTextSearchInfo(ActionsDAG & actions)
@@ -1323,7 +1177,7 @@ SparseSearchInfoPtr ExpressionAnalyzer::commonMakeSparseSearchInfo(
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown parameter {} for SparseSearch", param_key);
     }
 
-    return std::make_shared<SparseSearchInfo>(sparse_column_name, query_sparse_vector, function_col_name, topk, search_mode);
+    return std::make_shared<SparseSearchInfo>(sparse_column_name, query_sparse_vector, function_col_name, LimitTopKBySettings(topk), search_mode);
 }
 
 bool ExpressionAnalyzer::makeSparseSearchInfo(ActionsDAG & actions)
@@ -1359,7 +1213,7 @@ bool ExpressionAnalyzer::makeSparseSearchInfo(ActionsDAG & actions)
     return sparse_search_info != nullptr;
 }
 
-/// create hybrid search info, mainly record the column name and parameters
+/// Create hybrid search info, mainly record the column name and parameters
 bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
 {
     if (hybrid_search_funcs().size() == 1 && hybrid_search_funcs()[0])
@@ -1376,6 +1230,7 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
         std::unordered_map<String, String> hybrid_parameters_map;
         std::vector<String> vector_scan_parameter;
         std::vector<String> text_search_parameters;
+        std::vector<String> sparse_search_parameters;
         String vector_scan_index_name;
         for (const auto & arg : parameters)
         {
@@ -1412,6 +1267,10 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
             {
                 text_search_parameters.push_back(param_str);
             }
+            else if (param_key.find(sparse_search_parameter_prefix) == 0)
+            {
+                sparse_search_parameters.push_back(param_str.substr(std::strlen(sparse_search_parameter_prefix)));
+            }
             else
             {
                 throw Exception(ErrorCodes::ILLEGAL_HYBRID_SEARCH, "Unknown parameter {} in the HybridSearch function.", param_key);
@@ -1440,11 +1299,21 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
 
         LOG_DEBUG(getLogger(), "num_candidates is {}", num_candidates);
 
-        /// make VSDescription for HybridSearchInfo
+        VectorScanInfoPtr tmp_vector_scan_info = nullptr;
+        TextSearchInfoPtr tmp_text_search_info = nullptr;
+        SparseSearchInfoPtr tmp_sparse_search_info = nullptr;
+
+        /// make VectorScanInfo for HybridSearchInfo
+        auto makeVectorScanInfo = [&](size_t vector_column_arg_idx, size_t query_vector_arg_idx)
         {
-            getRootActionsNoMakeSet(arguments[2], actions);
-            auto vector_scan_desc = commonMakeVectorScanDescription(actions, "distance_func", arguments[0], arguments[2],
-                                                num_candidates, syntax->vector_scan_metric_types[0], syntax->vector_search_types[0]);
+            getRootActionsNoMakeSet(arguments[query_vector_arg_idx], actions);
+            auto vector_scan_desc = commonMakeVectorScanDescription(
+                actions,
+                VECTOR_SEARCH_SCORE_COLUMN_NAME,
+                arguments[vector_column_arg_idx],
+                arguments[query_vector_arg_idx],
+                num_candidates,
+                syntax->vector_search_types[0]);
 
             /// Save vector_scan_parameter to vector_scan_desc's parameters
             if (!vector_scan_parameter.empty())
@@ -1457,19 +1326,66 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
             }
 
             /// Save vector scan index name
-            if (!vector_scan_index_name.empty())
+            if (!syntax->is_remote_storage)
                 vector_scan_desc.search_index_name = vector_scan_index_name;
 
             vector_scan_descriptions.push_back(vector_scan_desc);
-        }
+            tmp_vector_scan_info = std::make_shared<VectorScanInfo>(vector_scan_descriptions);
+        };
 
         /// make TextSearchInfo for HybridSearchInfo
-        Array text_params(text_search_parameters.size());
-        for (size_t i = 0; i < text_search_parameters.size(); ++i)
-            text_params[i] = text_search_parameters[i];
+        auto makeTextSearchInfo = [&](size_t text_column_arg_idx, size_t query_text_arg_idx)
+        {
+            Array text_params(text_search_parameters.size());
+            for (size_t i = 0; i < text_search_parameters.size(); ++i)
+                text_params[i] = text_search_parameters[i];
 
-        getRootActionsNoMakeSet(arguments[3], actions);
-        auto tmp_text_search_info = commonMakeTextSearchInfo("HybridSearch", actions, "textsearch_func", arguments[1], arguments[3], num_candidates, text_params);
+            getRootActionsNoMakeSet(arguments[query_text_arg_idx], actions);
+            tmp_text_search_info = commonMakeTextSearchInfo(
+                "HybridSearch",
+                actions,
+                TEXT_SEARCH_SCORE_COLUMN_NAME,
+                arguments[text_column_arg_idx],
+                arguments[query_text_arg_idx],
+                num_candidates,
+                text_params);
+        };
+
+        /// make SparseSearchInfo for HybridSearchInfo
+        auto makeSparseSearchInfo = [&](size_t sparse_column_arg_idx, size_t query_sparse_arg_idx)
+        {
+            Array sparse_params(sparse_search_parameters.size());
+            for (size_t i = 0; i < sparse_search_parameters.size(); ++i)
+                sparse_params[i] = sparse_search_parameters[i];
+
+
+            getRootActionsNoMakeSet(arguments[query_sparse_arg_idx], actions);
+            tmp_sparse_search_info = commonMakeSparseSearchInfo(
+                "HybridSearch",
+                SPARSE_SEARCH_SCORE_COLUMN_NAME,
+                arguments[sparse_column_arg_idx],
+                arguments[query_sparse_arg_idx],
+                num_candidates,
+                sparse_params);
+        };
+
+        for (size_t arg_idx = 0; arg_idx < syntax->search_func_in_hybrid_search.size(); ++arg_idx)
+        {
+            switch (syntax->search_func_in_hybrid_search[arg_idx])
+            {
+                case HybridSearchFuncType::VECTOR_SCAN:
+                    makeVectorScanInfo(arg_idx, arg_idx + 2);
+                    break;
+                case HybridSearchFuncType::TEXT_SEARCH:
+                    makeTextSearchInfo(arg_idx, arg_idx + 2);
+                    break;
+                case HybridSearchFuncType::SPARSE_SEARCH:
+                    makeSparseSearchInfo(arg_idx, arg_idx + 2);
+                    break;
+                default:
+                    throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unsupported search type in HybridSearch function");
+            }
+        }
 
         String hybrid_fusion_type = hybrid_parameters_map["fusion_type"];
         String function_column_name = node->getColumnName();
@@ -1493,9 +1409,14 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
             }
 
             hybrid_search_info = std::make_shared<HybridSearchInfo>(
-                std::make_shared<VectorScanInfo>(vector_scan_descriptions),
+                tmp_vector_scan_info,
                 tmp_text_search_info,
-                function_column_name, static_cast<int>(syntax->limit_length), hybrid_fusion_type, hybrid_fusion_weight);
+                tmp_sparse_search_info,
+                syntax->search_func_in_hybrid_search,
+                function_column_name,
+                static_cast<int>(syntax->limit_length),
+                hybrid_fusion_type,
+                hybrid_fusion_weight);
         }
         else if (isRankFusion(hybrid_fusion_type))
         {
@@ -1511,13 +1432,17 @@ bool ExpressionAnalyzer::makeHybridSearchInfo(ActionsDAG & actions)
             if (hybrid_fusion_k < 0)
             {
                 throw Exception(
-                    ErrorCodes::BAD_ARGUMENTS,
-                    "Wrong HybridSearch parameter for Reciprocal Rank Fusion(RRF), `fusion_k` is less than 0");
+                    ErrorCodes::BAD_ARGUMENTS, "Wrong HybridSearch parameter for Reciprocal Rank Fusion(RRF), `fusion_k` is less than 0");
             }
             hybrid_search_info = std::make_shared<HybridSearchInfo>(
-                std::make_shared<VectorScanInfo>(vector_scan_descriptions),
+                tmp_vector_scan_info,
                 tmp_text_search_info,
-                function_column_name, static_cast<int>(syntax->limit_length), hybrid_fusion_type, hybrid_fusion_k);
+                tmp_sparse_search_info,
+                syntax->search_func_in_hybrid_search,
+                function_column_name,
+                static_cast<int>(syntax->limit_length),
+                hybrid_fusion_type,
+                hybrid_fusion_k);
         }
         else
         {

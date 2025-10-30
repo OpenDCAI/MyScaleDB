@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Analyzer/IQueryTreeNode.h>
+#include <Core/NamesAndTypes.h>
 
 namespace DB
 {
@@ -24,6 +25,18 @@ struct AggregatesValidationParams
   * 5. Throws exception if there is GROUPING SETS or ROLLUP or CUBE or WITH TOTALS without aggregation.
   */
 void validateAggregates(const QueryTreeNodePtr & query_node, AggregatesValidationParams params);
+
+/** Validate hybrid search functions in query node.
+  *
+  * 1. Check that there are only one text or hybrid search function, or one or multiple distance functions.
+  * 2. Check that there are ORDER BY and LIMIT clauses with hybrid search function.
+  * 3. Check that there is a hybrid search function column in ORDER BY.
+  * 4. Check that the sort direction of hybrid search function in ORDER BY is correct.
+  * 5. Update project_columns: hybrid search function's project name to alias name.(Needed for distributed table cases)
+  *    The default alias name is added for search function without alias name during collection.
+  * 6. Support multiple distances: remove the limit on ORDER BY clause.
+  */
+void validateHybridSearchFuncs(const QueryTreeNodePtr & query_node, bool & need_resolve_order_by, NamesAndTypes & projection_columns);
 
 /** Assert that there are no function nodes with specified function name in node children.
   * Do not visit subqueries.

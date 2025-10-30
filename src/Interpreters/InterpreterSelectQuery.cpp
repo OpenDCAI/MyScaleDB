@@ -749,7 +749,7 @@ InterpreterSelectQuery::InterpreterSelectQuery(
                     if (data.vector_scan_funcs.size() > 1)
                     {
                         /// As for multiple vector scan functions, the order of new hybrid_search_funcs remain the same as original
-                        /// So the vector_scan_metric_types and vector_search_types of TreeRewriterResult no need to reset
+                        /// So the vector_search_types of TreeRewriterResult no need to reset
                         for (const auto & vector_scan_func : data.all_multiple_vector_scan_funcs)
                             vector_scan_func->is_from_multiple_distances = true;
                     }
@@ -891,16 +891,20 @@ InterpreterSelectQuery::InterpreterSelectQuery(
         /// Collect global statistics information of all shards used in BM25 calculation when text/hybrid search is distributed
         auto distributed_storage = std::dynamic_pointer_cast<StorageDistributed>(storage);
 
-        if (distributed_storage)
+        if (distributed_storage && distributed_storage->getShardCount() > 1)
         {
             String text_column_name, query_text;
             if (query_analyzer->getAnalyzedData().text_search_info)
             {
+                /// Distributed Text Search
                 text_column_name = query_analyzer->getAnalyzedData().text_search_info->text_column_name;
                 query_text = query_analyzer->getAnalyzedData().text_search_info->query_text;
             }
-            else if (query_analyzer->getAnalyzedData().hybrid_search_info)
+            else if (
+                query_analyzer->getAnalyzedData().hybrid_search_info
+                && query_analyzer->getAnalyzedData().hybrid_search_info->text_search_info)
             {
+                /// Distributed Hybrid Search with Text Search
                 text_column_name = query_analyzer->getAnalyzedData().hybrid_search_info->text_search_info->text_column_name;
                 query_text = query_analyzer->getAnalyzedData().hybrid_search_info->text_search_info->query_text;
             }
@@ -2029,7 +2033,8 @@ void InterpreterSelectQuery::executeImpl(QueryPlan & query_plan, std::optional<P
 
                 if (from_aggregation_stage)
                 {
-                    if (expressions.need_hybrid_search && query_info.getCluster()->getShardsInfo().size() > 1)
+                    if (expressions.need_hybrid_search && query_info.getCluster()->getShardsInfo().size() > 1
+                        && !context->getSettingsRef().allow_experimental_analyzer)
                     {
                         executeFusionSorted(query_plan);
                     }
@@ -3168,9 +3173,10 @@ void InterpreterSelectQuery::executeFusionSorted(QueryPlan & query_plan)
         limit,
         limit * context->getSettingsRef().hybrid_search_top_k_multiple_base,
         query_info.hybrid_search_info->fusion_type,
+        query_info.hybrid_search_info->search_func_list,
         context->getSettingsRef().hybrid_search_fusion_k,
         context->getSettingsRef().hybrid_search_fusion_weight,
-        query_info.hybrid_search_info->vector_scan_info->vector_scan_descs[0].direction);
+        query_info.hybrid_search_info->vector_scan_info ? query_info.hybrid_search_info->vector_scan_info->vector_scan_descs[0].direction : -1);
 
     fusion_sorting->setStepDescription("HybridSearch Fusion and Sorting");
     query_plan.addStep(std::move(fusion_sorting));

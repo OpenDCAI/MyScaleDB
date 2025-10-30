@@ -187,7 +187,15 @@ void SegmentsMgr::removeSegMemoryResource()
 
 void SegmentsMgr::initSegment()
 {
-    this->initSegmentsImpl();
+    try
+    {
+        this->initSegmentsImpl();
+    }
+    catch (...)
+    {
+        // cannot throw exception here, because it will cause the part to be broken
+        LOG_WARNING(log, "Failed to init vector index for part {}: {}", data_part.name, getCurrentExceptionMessage(false));
+    }
 }
 
 void SegmentsMgr::initSegmentsImpl()
@@ -283,6 +291,8 @@ void SegmentsMgr::validateSegmentsInLock(const std::unique_lock<std::shared_mute
     std::vector<std::pair<String, VIDescription>> segments_to_rebuild;
     for (auto [vi_name, segment] : segments)
     {
+        if (!segment)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Vector index {} is nullptr", vi_name);
         if (segment->validateSegments())
             continue;
         LOG_WARNING(log, "Vector index {} files are corrupted, remove all files", vi_name);

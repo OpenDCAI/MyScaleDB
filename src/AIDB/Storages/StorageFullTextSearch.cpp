@@ -163,6 +163,10 @@ void StorageFullTextSearch::distributedRead(
 
     size_t shard_count = nested_distributed->getShardCount();
 
+    /// TODO: Support new analyzer
+    auto local_context = Context::createCopy(context);
+    local_context->setSetting("allow_experimental_analyzer", false);
+
     /// Make clone for query
     ASTPtr modified_query_ast = query_info.query->clone();
     ASTSelectQuery & modified_select_query = modified_query_ast->as<ASTSelectQuery &>();
@@ -217,7 +221,7 @@ void StorageFullTextSearch::distributedRead(
     ASTPtr bak_query_distributed = query_info.query;
     query_info.query = modified_query_ast;
 
-    nested_distributed->read(query_plan, column_names, nested_snapshot, query_info, context, processed_stage, max_block_size, num_streams);
+    nested_distributed->read(query_plan, column_names, nested_snapshot, query_info, local_context, processed_stage, max_block_size, num_streams);
 
     /// Restore query
     query_info.query = bak_query_distributed;
@@ -225,12 +229,12 @@ void StorageFullTextSearch::distributedRead(
     if (nested_distributed->getShardCount() > 1)
     {
         /// Sort results from shards based on 'score_column_name' column
-        executeMergeSorted(query_plan, context, modified_select_query, limit);
+        executeMergeSorted(query_plan, local_context, modified_select_query, limit);
 
         /// If original query contains order by clause, add a sort step
         const auto & select_query = query_info.query->as<ASTSelectQuery &>();
         if (select_query.orderBy())
-            executeOrder(query_plan, context, select_query);
+            executeOrder(query_plan, local_context, select_query);
     }
 }
 

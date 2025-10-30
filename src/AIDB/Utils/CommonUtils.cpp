@@ -22,9 +22,11 @@
 #include <Columns/ColumnFixedString.h>
 #include <Common/logger_useful.h>
 
+#include <Storages/MergeTree/MergeTreeSettings.h>
 #include <SearchIndex/SearchIndexCommon.h>
 #include <AIDB/Storages/VSDescription.h>
 #include <AIDB/Utils/CommonUtils.h>
+#include <AIDB/Common/VICommon.h>
 
 #if USE_FTS_INDEX
 #    include <Columns/ColumnConst.h>
@@ -69,16 +71,17 @@ Search::DataType getSearchIndexDataType(DataTypePtr &data_type)
             if (array_type)
             {
                 WhichDataType which(array_type->getNestedType());
-                if (!which.isFloat32())
-                    throw Exception(ErrorCodes::INCORRECT_DATA, "The element type inside the array must be `Float32`");
-                return Search::DataType::FloatVector;
+                if (which.isFloat32() || which.isBFloat16())
+                    return Search::DataType::FloatVector;
+                else
+                    throw Exception(ErrorCodes::INCORRECT_DATA, "The element type inside the array must be `Float32` or `BFloat16`");
             }
             break;
         }
         case TypeIndex::FixedString:
             return Search::DataType::BinaryVector;
         default:
-            throw Exception(ErrorCodes::INCORRECT_DATA, "Vector search can be used with `Array(Float32)` or `FixedString` column");
+            throw Exception(ErrorCodes::INCORRECT_DATA, "Vector search supports `Array(Float32)`, `Array(BFloat16)`, or `FixedString` columns only");
     }
 
     throw Exception(ErrorCodes::INCORRECT_DATA, "Unsupported Vector search Type");
@@ -362,5 +365,72 @@ void parseBM25StaisiticsInfo(const Block & block, size_t row, UInt64 & total_doc
     }
 }
 #endif
+
+/// Infer the search argument type(vector, text, sparse) from the search column type
+HybridSearchFuncType inferSearchModeInHybridSearch(const std::optional<NameAndTypePair> & search_column)
+{
+    switch (search_column->type->getTypeId())
+    {
+        case TypeIndex::FixedString:
+        {
+            /// BinaryVector Search
+            return HybridSearchFuncType::VECTOR_SCAN;
+        }
+        case TypeIndex::Array:
+        {
+            const DataTypeArray *array_type = typeid_cast<const DataTypeArray *>(search_column->type.get());
+            if (array_type)
+            {
+                WhichDataType which(array_type->getNestedType());
+                if (which.isString())
+                {
+                    /// Text Search
+                    return HybridSearchFuncType::TEXT_SEARCH;
+                }
+                else if (which.isFloat32())
+                {
+                    /// Vector Search
+                    return HybridSearchFuncType::VECTOR_SCAN;
+                }
+                else
+                {
+                    throw Exception(ErrorCodes::INCORRECT_DATA, "Hybrid search function only support columns with vector or Fts or sparse index.");
+                }
+            }
+            else
+                throw Exception(ErrorCodes::INCORRECT_DATA, "Search column type is incorrect Array type");
+        }
+        case TypeIndex::String:
+        {
+            /// Text Search
+            return HybridSearchFuncType::TEXT_SEARCH;
+        }
+        case TypeIndex::Map:
+        {
+            const DataTypeMap *map_type = typeid_cast<const DataTypeMap *>(search_column->type.get());
+            if (map_type)
+            {
+                WhichDataType which_key(map_type->getKeyType());
+                WhichDataType which_value(map_type->getValueType());
+                if (which_key.isUInt32() && which_value.isFloat32())
+                {
+                    /// Sparse Search
+                    return HybridSearchFuncType::SPARSE_SEARCH;
+                }
+                else if (which_key.isString() && which_value.isString())
+                {
+                    /// Text Search
+                    return HybridSearchFuncType::TEXT_SEARCH;
+                }
+                else
+                    throw Exception(ErrorCodes::INCORRECT_DATA, "Hybrid search function only support columns with vector or Fts or sparse index.");
+            }
+            else
+                throw Exception(ErrorCodes::INCORRECT_DATA, "Search column type is incorrect Map type");
+        }
+        default:
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unsupported search column for Hybrid Search: {}, column type: {}", search_column->name, search_column->type->getName());
+    }
+}
 
 }

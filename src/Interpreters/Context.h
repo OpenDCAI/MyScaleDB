@@ -72,6 +72,7 @@ class EmbeddedDictionaries;
 class ExternalDictionariesLoader;
 class ExternalUserDefinedExecutableFunctionsLoader;
 class IUserDefinedSQLObjectsStorage;
+class IWorkloadEntityStorage;
 class InterserverCredentials;
 using InterserverCredentialsPtr = std::shared_ptr<const InterserverCredentials>;
 class InterserverIOHandler;
@@ -680,6 +681,16 @@ public:
     void setMergeWorkload(const String & value);
     String getMutationWorkload() const;
     void setMutationWorkload(const String & value);
+    bool getThrowOnUnknownWorkload() const;
+    void setThrowOnUnknownWorkload(bool value);
+    bool getCPUSlotPreemption() const;
+    UInt64 getCPUSlotQuantum() const;
+    UInt64 getCPUSlotPreemptionTimeout() const;
+    void setCPUSlotPreemption(bool cpu_slot_preemption, UInt64 cpu_slot_quantum_ns, UInt64 cpu_slot_preemption_timeout_ms);
+    UInt64 getConcurrentThreadsSoftLimitNum() const;
+    UInt64 getConcurrentThreadsSoftLimitRatioToCores() const;
+    String getConcurrentThreadsScheduler() const;
+    std::pair<UInt64, String> setConcurrentThreadsSoftLimit(UInt64 num, UInt64 ratio_to_cores, const String & scheduler);
 
     /// We have to copy external tables inside executeQuery() to track limits. Therefore, set callback for it. Must set once.
     void setExternalTablesInitializer(ExternalTablesInitializer && initializer);
@@ -890,6 +901,8 @@ public:
     IUserDefinedSQLObjectsStorage & getUserDefinedSQLObjectsStorage();
     void setUserDefinedSQLObjectsStorage(std::unique_ptr<IUserDefinedSQLObjectsStorage> storage);
     void loadOrReloadUserDefinedExecutableFunctions(const Poco::Util::AbstractConfiguration & config);
+
+    IWorkloadEntityStorage & getWorkloadEntityStorage() const;
 
 #if USE_NLP
     SynonymsExtensions & getSynonymsExtensions() const;

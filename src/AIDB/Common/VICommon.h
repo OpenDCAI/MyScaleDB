@@ -36,6 +36,14 @@
 #pragma clang diagnostic ignored "-Wcovered-switch-default"
 #pragma clang diagnostic ignored "-Wunused-parameter"
 #pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wshadow-field-in-constructor"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wcast-align"
+#pragma clang diagnostic ignored "-Winconsistent-missing-destructor-override"
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wshadow-field"
+#pragma clang diagnostic ignored "-Wdocumentation"
+#pragma clang diagnostic ignored "-Wsuggest-destructor-override"
 #include <SearchIndex/VectorSearch.h>
 #pragma clang diagnostic pop
 #endif
@@ -79,26 +87,26 @@ namespace ErrorCodes
     }                                                                   \
     catch (const DB::Exception & e)                                     \
     {                                                                   \
-        throw AIDB::VIException(                              \
+        throw AIDB::VIException(                                        \
             e.code(),                                                   \
             "Error in {}, {}", func_name, e.message());                 \
     }                                                                   \
     catch (const SearchIndexException & e)                              \
     {                                                                   \
-        throw AIDB::VIException(                              \
+        throw AIDB::VIException(                                        \
             e.getCode(),                                                \
             "Error in {}, {}", func_name, e.what());                    \
     }                                                                   \
     catch (const std::exception & e)                                    \
     {                                                                   \
-        throw AIDB::VIException(                              \
+        throw AIDB::VIException(                                        \
             DB::ErrorCodes::STD_EXCEPTION,                              \
             "Error in {}, {}",                                          \
             func_name, e.what());                                       \
     }                                                                   \
     catch (...)                                                         \
     {                                                                   \
-        throw AIDB::VIException(                              \
+        throw AIDB::VIException(                                        \
             DB::ErrorCodes::UNKNOWN_EXCEPTION,                          \
             "Unknown error in {}.", func_name);                         \
     }

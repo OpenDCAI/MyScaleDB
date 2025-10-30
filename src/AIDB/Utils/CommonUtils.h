@@ -18,6 +18,7 @@
 #include <base/types.h>
 #include <Poco/String.h>
 #include <Interpreters/Context_fwd.h>
+#include <Core/NamesAndTypes.h>
 
 namespace Search
 {
@@ -26,6 +27,8 @@ enum class DataType;
 
 namespace DB
 {
+struct StorageInMemoryMetadata;
+using StorageMetadataPtr = std::shared_ptr<const StorageInMemoryMetadata>;
 
 const String BATCH_DISTANCE_FUNCTION = "batch_distance";
 const String DISTANCE_FUNCTION = "distance";
@@ -41,8 +44,8 @@ enum class HybridSearchFuncType
     UNKNOWN_FUNC = 0,
     VECTOR_SCAN,
     TEXT_SEARCH,
+    SPARSE_SEARCH,
     HYBRID_SEARCH,
-    SPARSE_SEARCH
 };
 
 inline String getSearchFuncName(HybridSearchFuncType type)
@@ -105,6 +108,15 @@ inline bool isHybridSearchFunc(const String & func)
     return isVectorScanFunc(func) || isTextSearch(func) || isHybridSearch(func) || isSparseSearch(func);
 }
 
+/// Check if the function name is exactly 'distance' or 'textsearch' or 'hybridsearch'
+inline bool isSpecialSearchFunctionName(const String & func)
+{
+    String func_to_low = Poco::toLower(func);
+    return func_to_low == DISTANCE_FUNCTION || func_to_low == BATCH_DISTANCE_FUNCTION ||
+            func_to_low == TEXT_SEARCH_FUNCTION || func_to_low == HYBRID_SEARCH_FUNCTION ||
+            func_to_low == SPARSE_SEARCH_FUNCTION;
+}
+
 inline bool isRelativeScoreFusion(const String & fusion_type)
 {
     String type = Poco::toLower(fusion_type);
@@ -134,5 +146,7 @@ void checkSparseSearchColumnDataType(DataTypePtr & data_type);
 void collectStatisticForBM25Calculation(ContextMutablePtr & context, String cluster_name, String database_name, String table_name, String query_column_name, String query_text);
 void parseBM25StaisiticsInfo(const Block & block, size_t row, UInt64 & total_docs, std::map<UInt32, UInt64> & total_tokens_map, std::map<std::pair<UInt32, String>, UInt64> & terms_freq_map);
 #endif
+
+HybridSearchFuncType inferSearchModeInHybridSearch(const std::optional<NameAndTypePair> & search_column);
 
 }

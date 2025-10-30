@@ -333,6 +333,16 @@ public:
         return identifiers_to_optimize;
     }
 
+    static bool needChildVisit(VisitQueryTreeNodeType & parent, VisitQueryTreeNodeType & child [[maybe_unused]])
+    {
+        /// Skip special search
+        /// If mapKeys(doc) in text search is replaced to doc.key, it doesn't match the column name saved in index desc.
+        if (parent->as<FunctionNode>() && parent->as<FunctionNode>()->isSpecialSearchFunction())
+            return false;
+
+        return true;
+    }
+
 private:
     std::unordered_set<Identifier> all_key_columns;
     std::unordered_map<Identifier, UInt64> identifiers_count;

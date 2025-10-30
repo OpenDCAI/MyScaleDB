@@ -4,11 +4,14 @@
 #include <memory>
 #include <Poco/UUID.h>
 #include <Poco/Util/Application.h>
+#include <Common/ISlotControl.h>
+#include <Common/Scheduler/IResourceManager.h>
 #include <Common/AsyncLoader.h>
 #include <Common/PoolId.h>
 #include <Common/SensitiveDataMasker.h>
 #include <Common/Macros.h>
 #include <Common/EventNotifier.h>
+#include <Common/getNumberOfPhysicalCPUCores.h>
 #include <Common/Stopwatch.h>
 #include <Common/formatReadable.h>
 #include <Common/Throttler.h>
@@ -19,6 +22,7 @@
 #include <Common/SharedLockGuard.h>
 #include <Common/PageCache.h>
 #include <Common/NamedCollections/NamedCollectionsFactory.h>
+#include <Common/ConcurrencyControl.h>
 #include <Coordination/KeeperDispatcher.h>
 #include <Core/BackgroundSchedulePool.h>
 #include <Core/Settings.h>
@@ -64,7 +68,6 @@
 #include <Access/SettingsConstraintsAndProfileIDs.h>
 #include <Access/ExternalAuthenticators.h>
 #include <Access/GSSAcceptor.h>
-#include <Common/Scheduler/ResourceManagerFactory.h>
 #include <Backups/BackupsWorker.h>
 #include <Dictionaries/Embedded/GeoDictionariesLoader.h>
 #include <Interpreters/EmbeddedDictionaries.h>
@@ -89,6 +92,8 @@
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTAsterisk.h>
 #include <Parsers/ASTIdentifier.h>
+#include <Common/Scheduler/createResourceManager.h>
+#include <Common/Scheduler/Workload/createWorkloadEntityStorage.h>
 #include <Common/StackTrace.h>
 #include <Common/Config/ConfigHelper.h>
 #include <Common/Config/ConfigProcessor.h>
@@ -279,6 +284,9 @@ struct ContextSharedPart : boost::noncopyable
     mutable OnceFlag user_defined_sql_objects_storage_initialized;
     mutable std::unique_ptr<IUserDefinedSQLObjectsStorage> user_defined_sql_objects_storage;
 
+    mutable OnceFlag workload_entity_storage_initialized;
+    mutable std::unique_ptr<IWorkloadEntityStorage> workload_entity_storage;
+
 #if USE_NLP
     mutable OnceFlag synonyms_extensions_initialized;
     mutable std::optional<SynonymsExtensions> synonyms_extensions;
@@ -296,6 +304,13 @@ struct ContextSharedPart : boost::noncopyable
     String buffer_profile_name;                                 /// Profile used by Buffer engine for flushing to the underlying
     String merge_workload TSA_GUARDED_BY(mutex);                /// Workload setting value that is used by all merges
     String mutation_workload TSA_GUARDED_BY(mutex);             /// Workload setting value that is used by all mutations
+    bool throw_on_unknown_workload TSA_GUARDED_BY(mutex) = false;
+    bool cpu_slot_preemption TSA_GUARDED_BY(mutex) = false;
+    UInt64 cpu_slot_quantum_ns TSA_GUARDED_BY(mutex) = 10'000'000;
+    UInt64 cpu_slot_preemption_timeout_ms TSA_GUARDED_BY(mutex) = 1000;
+    UInt64 concurrent_threads_soft_limit_num TSA_GUARDED_BY(mutex) = 0;
+    UInt64 concurrent_threads_soft_limit_ratio_to_cores TSA_GUARDED_BY(mutex) = 0;
+    String concurrent_threads_scheduler TSA_GUARDED_BY(mutex);
     std::unique_ptr<AccessControl> access_control TSA_GUARDED_BY(mutex);
     mutable OnceFlag resource_manager_initialized;
     mutable ResourceManagerPtr resource_manager;
@@ -621,6 +636,7 @@ struct ContextSharedPart : boost::noncopyable
         SHUTDOWN(log, "dictionaries loader", external_dictionaries_loader, enablePeriodicUpdates(false));
         SHUTDOWN(log, "UDFs loader", external_user_defined_executable_functions_loader, enablePeriodicUpdates(false));
         SHUTDOWN(log, "another UDFs storage", user_defined_sql_objects_storage, stopWatching());
+        SHUTDOWN(log, "workload entity storage", workload_entity_storage, stopWatching());
 
         LOG_TRACE(log, "Shutting down named sessions");
         Session::shutdownNamedSessions();
@@ -653,6 +669,7 @@ struct ContextSharedPart : boost::noncopyable
         std::unique_ptr<ExternalDictionariesLoader> delete_external_dictionaries_loader;
         std::unique_ptr<ExternalUserDefinedExecutableFunctionsLoader> delete_external_user_defined_executable_functions_loader;
         std::unique_ptr<IUserDefinedSQLObjectsStorage> delete_user_defined_sql_objects_storage;
+        std::unique_ptr<IWorkloadEntityStorage> delete_workload_entity_storage;
         std::unique_ptr<BackgroundSchedulePool> delete_buffer_flush_schedule_pool;
         std::unique_ptr<BackgroundSchedulePool> delete_schedule_pool;
         std::unique_ptr<BackgroundSchedulePool> delete_distributed_schedule_pool;
@@ -737,6 +754,7 @@ struct ContextSharedPart : boost::noncopyable
             delete_external_dictionaries_loader = std::move(external_dictionaries_loader);
             delete_external_user_defined_executable_functions_loader = std::move(external_user_defined_executable_functions_loader);
             delete_user_defined_sql_objects_storage = std::move(user_defined_sql_objects_storage);
+            delete_workload_entity_storage = std::move(workload_entity_storage);
             delete_buffer_flush_schedule_pool = std::move(buffer_flush_schedule_pool);
             delete_schedule_pool = std::move(schedule_pool);
             delete_distributed_schedule_pool = std::move(distributed_schedule_pool);
@@ -755,6 +773,7 @@ struct ContextSharedPart : boost::noncopyable
         delete_external_dictionaries_loader.reset();
         delete_external_user_defined_executable_functions_loader.reset();
         delete_user_defined_sql_objects_storage.reset();
+        delete_workload_entity_storage.reset();
         delete_ddl_worker.reset();
         delete_buffer_flush_schedule_pool.reset();
         delete_schedule_pool.reset();
@@ -1731,7 +1750,7 @@ std::vector<UUID> Context::getEnabledProfiles() const
 ResourceManagerPtr Context::getResourceManager() const
 {
     callOnce(shared->resource_manager_initialized, [&] {
-        shared->resource_manager = ResourceManagerFactory::instance().get(getConfigRef().getString("resource_manager", "dynamic"));
+        shared->resource_manager = createResourceManager(getGlobalContext());
     });
 
     return shared->resource_manager;
@@ -1739,10 +1758,11 @@ ResourceManagerPtr Context::getResourceManager() const
 
 ClassifierPtr Context::getWorkloadClassifier() const
 {
+    ClassifierSettings settings{.throw_on_unknown_workload = getThrowOnUnknownWorkload()}; // to avoid locking shared mutex under `mutex`
     std::lock_guard lock(mutex);
     // NOTE: Workload cannot be changed after query start, and getWorkloadClassifier() should not be called before proper `workload` is set
     if (!classifier)
-        classifier = getResourceManager()->acquire(getSettingsRef().workload);
+        classifier = getResourceManager()->acquire(getSettingsRef().workload, settings);
     return classifier;
 }
 
@@ -1768,6 +1788,88 @@ void Context::setMutationWorkload(const String & value)
 {
     std::lock_guard lock(shared->mutex);
     shared->mutation_workload = value;
+}
+
+bool Context::getThrowOnUnknownWorkload() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->throw_on_unknown_workload;
+}
+void Context::setThrowOnUnknownWorkload(bool value)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->throw_on_unknown_workload = value;
+}
+
+bool Context::getCPUSlotPreemption() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->cpu_slot_preemption;
+}
+
+UInt64 Context::getCPUSlotQuantum() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->cpu_slot_quantum_ns;
+}
+
+UInt64 Context::getCPUSlotPreemptionTimeout() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->cpu_slot_preemption_timeout_ms;
+}
+
+void Context::setCPUSlotPreemption(bool cpu_slot_preemption, UInt64 cpu_slot_quantum_ns, UInt64 cpu_slot_preemption_timeout_ms)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->cpu_slot_preemption = cpu_slot_preemption;
+    shared->cpu_slot_quantum_ns = cpu_slot_quantum_ns;
+    shared->cpu_slot_preemption_timeout_ms = cpu_slot_preemption_timeout_ms;
+}
+
+UInt64 Context::getConcurrentThreadsSoftLimitNum() const
+{
+    std::lock_guard lock(shared->mutex);
+    return shared->concurrent_threads_soft_limit_num;
+}
+
+UInt64 Context::getConcurrentThreadsSoftLimitRatioToCores() const
+{
+    std::lock_guard lock(shared->mutex);
+    return shared->concurrent_threads_soft_limit_ratio_to_cores;
+}
+
+String Context::getConcurrentThreadsScheduler() const
+{
+    std::lock_guard lock(shared->mutex);
+    return shared->concurrent_threads_scheduler;
+}
+
+std::pair<UInt64, String> Context::setConcurrentThreadsSoftLimit(UInt64 num, UInt64 ratio_to_cores, const String & scheduler)
+{
+    std::lock_guard lock(shared->mutex);
+
+    // Set the scheduler
+    bool ok = ConcurrencyControl::instance().setScheduler(scheduler);
+    if (ok)
+        shared->concurrent_threads_scheduler = scheduler;
+    else
+        LOG_ERROR(shared->log, "Invalid value '{}' is set for the server setting 'concurrent_threads_scheduler'. Scheduler was not changed.", scheduler);
+
+    // Set the limit
+    SlotCount concurrent_threads_soft_limit = UnlimitedSlots;
+    if (num > 0 && num < concurrent_threads_soft_limit)
+        concurrent_threads_soft_limit = num;
+    if (ratio_to_cores > 0)
+    {
+        auto value = ratio_to_cores * getNumberOfPhysicalCPUCores();
+        if (value > 0 && value < concurrent_threads_soft_limit)
+            concurrent_threads_soft_limit = value;
+    }
+    ConcurrencyControl::instance().setMaxConcurrency(concurrent_threads_soft_limit);
+    shared->concurrent_threads_soft_limit_num = num;
+    shared->concurrent_threads_soft_limit_ratio_to_cores = ratio_to_cores;
+    return { concurrent_threads_soft_limit, ConcurrencyControl::instance().getScheduler() };
 }
 
 
@@ -2636,7 +2738,7 @@ bool Context::isBackgroundOperationContext() const
 void Context::killCurrentQuery() const
 {
     if (auto elem = getProcessListElement())
-        elem->cancelQuery(true);
+        elem->cancelQuery(CancelReason::CANCELLED_BY_USER);
 }
 
 bool Context::isCurrentQueryKilled() const
@@ -2969,6 +3071,16 @@ void Context::setUserDefinedSQLObjectsStorage(std::unique_ptr<IUserDefinedSQLObj
 {
     std::lock_guard lock(shared->mutex);
     shared->user_defined_sql_objects_storage = std::move(storage);
+}
+
+IWorkloadEntityStorage & Context::getWorkloadEntityStorage() const
+{
+    callOnce(shared->workload_entity_storage_initialized, [&] {
+        shared->workload_entity_storage = createWorkloadEntityStorage(getGlobalContext());
+    });
+
+    std::lock_guard lock(shared->mutex);
+    return *shared->workload_entity_storage;
 }
 
 #if USE_NLP

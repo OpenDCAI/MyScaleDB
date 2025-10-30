@@ -225,6 +225,8 @@ struct SelectQueryInfo
     /// If query has one of vector / text / hybrid / sparse search functions
     bool has_hybrid_search = false;
 
+    QueryTreeNodeWeakPtr search_source_weak_pointer;
+
     /// It is needed for full_text_search table function on distributed table
     ASTPtr full_text_search_table_func_ast;
 

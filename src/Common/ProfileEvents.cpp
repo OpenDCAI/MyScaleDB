@@ -107,6 +107,13 @@
     M(PartsWithAppliedMutationsOnFly, "Total number of parts for which there was any mutation applied on fly") \
     M(MutationsAppliedOnFlyInAllParts, "The sum of number of applied mutations on-fly for part among all read parts") \
     \
+    M(SchedulerIOReadRequests, "Resource requests passed through scheduler for IO reads.") \
+    M(SchedulerIOReadBytes, "Bytes passed through scheduler for IO reads.") \
+    M(SchedulerIOReadWaitMicroseconds, "Total time a query was waiting on resource requests for IO reads.") \
+    M(SchedulerIOWriteRequests, "Resource requests passed through scheduler for IO writes.") \
+    M(SchedulerIOWriteBytes, "Bytes passed through scheduler for IO writes.") \
+    M(SchedulerIOWriteWaitMicroseconds, "Total time a query was waiting on resource requests for IO writes.") \
+    \
     M(QueryMaskingRulesMatch, "Number of times query masking rules was successfully matched.") \
 \
     M(ReplicatedPartFetches, "Number of times a data part was downloaded from replica of a ReplicatedMergeTree table.") \
@@ -812,6 +819,20 @@ The server successfully detected this situation and will download merged part fr
     \
     M(ReadWriteBufferFromHTTPRequestsSent, "Number of HTTP requests sent by ReadWriteBufferFromHTTP") \
     M(ReadWriteBufferFromHTTPBytes, "Total size of payload bytes received and sent by ReadWriteBufferFromHTTP. Doesn't include HTTP headers.") \
+    \
+    M(ConcurrencyControlSlotsGranted, "Number of CPU slot granted according to guarantee of 1 thread per query and for queries with setting 'use_concurrency_control' = 0") \
+    M(ConcurrencyControlSlotsDelayed, "Number of CPU slot not granted initially and required to wait for a free CPU slot") \
+    M(ConcurrencyControlSlotsAcquired, "Total number of CPU slots acquired") \
+    M(ConcurrencyControlSlotsAcquiredNonCompeting, "Total number of noncompeting CPU slot acquired") \
+    M(ConcurrencyControlQueriesDelayed, "Total number of CPU slot allocations (queries) that were required to wait for slots to upscale") \
+    M(ConcurrencyControlWaitMicroseconds, "Total time a query was waiting on resource requests for CPU slots.") \
+    M(ConcurrencyControlPreemptedMicroseconds, "Total time a query was waiting due to preemption of CPU slots.") \
+    M(ConcurrencyControlPreemptions, "Total number of CPU preemptions") \
+    M(ConcurrencyControlUpscales, "Total number of CPU upscaling events") \
+    M(ConcurrencyControlDownscales, "Total number of CPU downscaling events") \
+    \
+    M(ConcurrentQuerySlotsAcquired, "Total number of query slots acquired") \
+    M(ConcurrentQueryWaitMicroseconds, "Total time a query was waiting for a query slots") \
     \
     M(GWPAsanAllocateSuccess, "Number of successful allocations done by GWPAsan") \
     M(GWPAsanAllocateFailed, "Number of failed allocations done by GWPAsan (i.e. filled pool)") \

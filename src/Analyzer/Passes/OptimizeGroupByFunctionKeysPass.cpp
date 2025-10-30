@@ -75,7 +75,12 @@ private:
 
         std::vector<NodeWithInfo> candidates;
         auto & function_arguments = function->getArguments().getNodes();
-        bool is_deterministic = function->getFunctionOrThrow()->isDeterministicInScopeOfQuery();
+
+        /// special search function is not a ordinary function
+        bool is_deterministic = true;
+        if (!function->isSpecialSearchFunction())
+            is_deterministic = function->getFunctionOrThrow()->isDeterministicInScopeOfQuery();
+
         for (auto it = function_arguments.rbegin(); it != function_arguments.rend(); ++it)
             candidates.push_back({ *it, is_deterministic });
 
@@ -96,6 +101,9 @@ private:
                     auto * func = candidate->as<FunctionNode>();
                     auto & arguments = func->getArguments().getNodes();
                     if (arguments.empty())
+                        return false;
+
+                    if (func->isSpecialSearchFunction())
                         return false;
 
                     if (!found)

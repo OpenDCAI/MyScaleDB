@@ -29,7 +29,7 @@
 #include <Common/DNSResolver.h>
 #include <Common/CgroupsMemoryUsageObserver.h>
 #include <Common/CurrentMetrics.h>
-#include <Common/ConcurrencyControl.h>
+#include <Common/ISlotControl.h>
 #include <Common/Macros.h>
 #include <Common/ShellCommand.h>
 #include <Common/ZooKeeper/ZooKeeper.h>
@@ -59,6 +59,7 @@
 #include <IO/ReadBufferFromFile.h>
 #include <IO/SharedThreadPools.h>
 #include <IO/UseSSL.h>
+#include <Interpreters/CancellationChecker.h>
 #include <Interpreters/ServerAsynchronousMetrics.h>
 #include <Interpreters/DDLWorker.h>
 #include <Interpreters/DNSCacheUpdater.h>
@@ -85,7 +86,7 @@
 #include <Dictionaries/registerDictionaries.h>
 #include <Disks/registerDisks.h>
 #include <Common/Scheduler/Nodes/registerSchedulerNodes.h>
-#include <Common/Scheduler/Nodes/registerResourceManagers.h>
+#include <Common/Scheduler/Workload/IWorkloadEntityStorage.h>
 #include <Common/Config/ConfigReloader.h>
 #include <Server/HTTPHandlerFactory.h>
 #include "MetricsTransmitter.h"
@@ -895,7 +896,6 @@ try
     registerFormats();
     registerRemoteFileMetadatas();
     registerSchedulerNodes();
-    registerResourceManagers();
 
     CurrentMetrics::set(CurrentMetrics::Revision, ClickHouseRevision::getVersionRevision());
     CurrentMetrics::set(CurrentMetrics::VersionInteger, ClickHouseRevision::getVersionInteger());
@@ -1343,6 +1343,23 @@ try
     if (oom_score)
         setOOMScore(oom_score, log);
 #endif
+
+    std::unique_ptr<DB::BackgroundSchedulePoolTaskHolder> cancellation_task;
+
+    SCOPE_EXIT({
+        if (cancellation_task)
+            CancellationChecker::getInstance().terminateThread();
+    });
+
+    if (server_settings.background_schedule_pool_size > 1)
+    {
+        auto cancellation_task_holder = global_context->getSchedulePool().createTask(
+            "CancellationChecker",
+            [] { CancellationChecker::getInstance().workerFunction(); }
+        );
+        cancellation_task = std::make_unique<DB::BackgroundSchedulePoolTaskHolder>(std::move(cancellation_task_holder));
+        (*cancellation_task)->activateAndSchedule();
+    }
 
     global_context->setRemoteHostFilter(config());
     global_context->setHTTPHeaderFilter(config());
@@ -1819,16 +1836,13 @@ try
             /// Only for system.server_settings
             global_context->setConfigReloaderInterval(new_server_settings.config_reload_interval_ms);
 
-            SlotCount concurrent_threads_soft_limit = UnlimitedSlots;
-            if (new_server_settings.concurrent_threads_soft_limit_num > 0 && new_server_settings.concurrent_threads_soft_limit_num < concurrent_threads_soft_limit)
-                concurrent_threads_soft_limit = new_server_settings.concurrent_threads_soft_limit_num;
-            if (new_server_settings.concurrent_threads_soft_limit_ratio_to_cores > 0)
-            {
-                auto value = new_server_settings.concurrent_threads_soft_limit_ratio_to_cores * getNumberOfPhysicalCPUCores();
-                if (value > 0 && value < concurrent_threads_soft_limit)
-                    concurrent_threads_soft_limit = value;
-            }
-            ConcurrencyControl::instance().setMaxConcurrency(concurrent_threads_soft_limit);
+            auto [concurrent_threads_soft_limit, concurrency_control_scheduler] = global_context->setConcurrentThreadsSoftLimit(
+                new_server_settings.concurrent_threads_soft_limit_num,
+                new_server_settings.concurrent_threads_soft_limit_ratio_to_cores,
+                new_server_settings.concurrent_threads_scheduler);
+            LOG_INFO(log, "ConcurrencyControl limit is set to {} CPU slots with '{}' scheduler",
+                concurrent_threads_soft_limit == UnlimitedSlots ? std::string("UNLIMITED") : std::to_string(concurrent_threads_soft_limit),
+                concurrency_control_scheduler);
 
             global_context->getProcessList().setMaxSize(new_server_settings.max_concurrent_queries);
             global_context->getProcessList().setMaxInsertQueriesAmount(new_server_settings.max_concurrent_insert_queries);
@@ -1910,6 +1924,11 @@ try
 
             global_context->setMergeWorkload(new_server_settings.merge_workload);
             global_context->setMutationWorkload(new_server_settings.mutation_workload);
+            global_context->setThrowOnUnknownWorkload(new_server_settings.throw_on_unknown_workload);
+            global_context->setCPUSlotPreemption(
+                new_server_settings.cpu_slot_preemption,
+                new_server_settings.cpu_slot_quantum_ns,
+                new_server_settings.cpu_slot_preemption_timeout_ms);
 
             if (config->has("resources"))
             {
@@ -2281,6 +2300,8 @@ try
         database_catalog.assertDatabaseExists(default_database);
         /// Load user-defined SQL functions.
         global_context->getUserDefinedSQLObjectsStorage().loadObjects();
+        /// Load WORKLOADs and RESOURCEs.
+        global_context->getWorkloadEntityStorage().loadEntities();
     }
     catch (...)
     {

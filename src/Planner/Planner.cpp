@@ -84,6 +84,7 @@
 #include <Planner/CollectColumnIdentifiers.h>
 #include <Planner/PlannerQueryProcessingInfo.h>
 
+#include <AIDB/Analyzer/SpecialSearchFunctionsUtils.h>
 namespace ProfileEvents
 {
     extern const Event SelectQueriesWithSubqueries;
@@ -1406,6 +1407,74 @@ void Planner::buildPlanForQueryNode()
     select_query_info.has_aggregates = hasAggregateFunctionNodes(query_tree);
     select_query_info.need_aggregate = query_node.hasGroupBy() || select_query_info.has_aggregates;
     select_query_info.merge_tree_enable_remove_parts_from_snapshot_optimization = select_query_options.merge_tree_enable_remove_parts_from_snapshot_optimization;
+
+    /// Analyze vector scan, text search and hybrid search
+    auto special_search_analysis_result_optional = analyzeSpecialSearch(query_tree, query_context);
+    if (special_search_analysis_result_optional)
+    {
+        if (special_search_analysis_result_optional->has_vector_scan)
+        {
+            select_query_info.vector_scan_info = std::make_shared<VectorScanInfo>(special_search_analysis_result_optional->vector_scan_descriptions);
+            select_query_info.has_hybrid_search = true;
+        }
+
+        if (special_search_analysis_result_optional->has_text_search)
+        {
+            select_query_info.text_search_info = special_search_analysis_result_optional->text_search_info;
+            select_query_info.has_hybrid_search = true;
+        }
+
+        if (special_search_analysis_result_optional->has_hybrid_search)
+        {
+            select_query_info.hybrid_search_info = special_search_analysis_result_optional->hybrid_search_info;
+            select_query_info.has_hybrid_search = true;
+        }
+
+        if (special_search_analysis_result_optional->has_sparse_search)
+        {
+            select_query_info.sparse_search_info = special_search_analysis_result_optional->sparse_search_info;
+            select_query_info.has_hybrid_search = true;
+        }
+
+        if (select_query_info.has_hybrid_search)
+            select_query_info.search_source_weak_pointer = special_search_analysis_result_optional->source_weak_pointer;
+
+        /// Collect global statistics information of all shards used in BM25 calculation when text/hybrid search is distributed
+        if (!select_query_options.only_analyze && query_context->getSettingsRef().dfs_query_then_fetch
+            && select_query_info.search_source_weak_pointer.lock() && select_query_info.has_hybrid_search)
+        {
+            String text_column_name, query_text;
+
+            if (select_query_info.text_search_info)
+            {
+                text_column_name = select_query_info.text_search_info->text_column_name;
+                query_text = select_query_info.text_search_info->query_text;
+            }
+            else if (select_query_info.hybrid_search_info && select_query_info.hybrid_search_info->text_search_info)
+            {
+                text_column_name = select_query_info.hybrid_search_info->text_search_info->text_column_name;
+                query_text = select_query_info.hybrid_search_info->text_search_info->query_text;
+            }
+
+            if (!text_column_name.empty())
+            {
+                auto table_storage = getTableStorageForSearchColumn(select_query_info.search_source_weak_pointer.lock(), text_column_name, query_context);
+                if (table_storage && table_storage->isRemote())
+                {
+                    if (auto distributed_storage = std::dynamic_pointer_cast<StorageDistributed>(table_storage); distributed_storage && distributed_storage->getShardCount() > 1)
+                    {
+                        collectStatisticForBM25Calculation(
+                            planner_context->getMutableQueryContext(),
+                            distributed_storage->getClusterName(),
+                            distributed_storage->getRemoteDatabaseName(),
+                            distributed_storage->getRemoteTableName(),
+                            text_column_name,
+                            query_text);
+                    }
+                }
+            }
+        }
+    }
 
     if (!select_query_info.has_window && query_node.hasQualify())
     {

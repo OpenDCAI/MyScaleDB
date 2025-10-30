@@ -18,6 +18,7 @@
 #include <Core/SortDescription.h>
 #include <QueryPipeline/SizeLimits.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
+#include <AIDB/Utils/CommonUtils.h>
 
 namespace DB
 {
@@ -32,6 +33,7 @@ public:
         UInt64 limit_,
         UInt64 num_candidates_,
         String fusion_type_,
+        std::vector<HybridSearchFuncType> search_func_list_,
         UInt64 fusion_k_,
         Float32 fusion_weight_,
         Int8 distance_score_order_direction_);
@@ -51,6 +53,7 @@ private:
 
     UInt64 num_candidates = 0;
     String fusion_type;
+    std::vector<HybridSearchFuncType> search_func_list;
 
     UInt64 fusion_k;
     Float32 fusion_weight;

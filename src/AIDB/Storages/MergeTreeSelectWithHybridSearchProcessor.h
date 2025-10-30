@@ -73,7 +73,7 @@ public:
 
     /// Execute vector, text, hybrid or sparse search on all parts
     /// For two stage search cases, execute first stage vector scan.
-    static VectorAndTextResultInDataParts selectPartsByVectorAndTextIndexes(
+    static VectorAndTextResultInDataParts selectPartsByIndexes(
         const RangesInDataParts & parts_with_ranges,
         const StorageMetadataPtr & metadata_snapshot,
         const SelectQueryInfo & query_info,

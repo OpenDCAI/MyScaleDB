@@ -44,7 +44,6 @@
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Parsers/ASTTablesInSelectQuery.h>
 #include <Parsers/ASTInterpolateElement.h>
-#include <Parsers/ASTOrderByElement.h>
 #include <Parsers/queryToString.h>
 #include <Parsers/ASTCreateQuery.h>
 
@@ -76,7 +75,6 @@
 #include <Storages/MergeTree/MergeTreeSettings.h>
 #include <AIDB/Common/VICommon.h>
 #include <AIDB/Interpreters/GetHybridSearchVisitor.h>
-#include <AIDB/Interpreters/parseVSParameters.h>
 #include <AIDB/Utils/VSUtils.h>
 #include <AIDB/Utils/HybridSearchUtils.h>
 
@@ -1146,80 +1144,6 @@ void addSearchFunctionColumnName(const String & func_col_name, NamesAndTypesList
     }
 }
 
-void checkOrderBySortDirection(
-    String func_name, ASTSelectQuery * select_query, int expected_direction,
-    String metric_type = "", bool is_batch = false)
-{
-    if (!select_query)
-        return;
-
-    auto order_by = select_query->orderBy();
-    if (!order_by)
-        return; /// order by is already checked and handled by getHybridSearchFunctions()
-
-    int sort_direction = 0;
-    bool find_search_function = false;
-
-    /// Find the direction for hybrid search func
-    for (const auto & child : order_by->children)
-    {
-        auto * order_by_element = child->as<ASTOrderByElement>();
-        if (!order_by_element || order_by_element->children.empty())
-            continue;
-        ASTPtr order_expression = order_by_element->children.at(0);
-
-        if (!is_batch)
-        {
-            /// Check cases when search function column is an argument of other functions
-            if (isHybridSearchFunc(order_expression->getColumnName()))
-            {
-                sort_direction = order_by_element->direction;
-                find_search_function = true;
-                break;
-            }
-            else if (auto * function = order_expression->as<ASTFunction>())
-            {
-                const ASTs & func_arguments = function->arguments->as<ASTExpressionList &>().children;
-                for (const auto & func_arg : func_arguments)
-                {
-                    if (isHybridSearchFunc(func_arg->getColumnName()))
-                    {
-                        sort_direction = order_by_element->direction;
-                        find_search_function = true;
-                        break;
-                    }
-                }
-            }
-        }
-        else if (is_batch)
-        {
-            /// order by batch_distance column name's 1 and 2, where 2 is distance column.
-            if (auto * function = order_expression->as<ASTFunction>(); function->name == "tupleElement")
-            {
-                const ASTs & func_arguments = function->arguments->as<ASTExpressionList &>().children;
-                if (func_arguments.size() >= 2 && isBatchDistance(func_arguments[0]->getColumnName()))
-                {
-                    if (func_arguments[1]->getColumnName() == "2")
-                    {
-                        sort_direction = order_by_element->direction;
-                        find_search_function = true;
-                        break;
-                    }
-                }
-            }
-        }
-   }
-
-    /// Only check the direction of search function when found in order by
-    if (find_search_function && sort_direction != expected_direction)
-    {
-        String vector_scan_error_log = metric_type.empty() ? "" : " when the metric type is " + metric_type;
-        throw Exception(ErrorCodes::SYNTAX_ERROR,
-                "The results returned by the {} function should be ordered by `{}`{}",
-                func_name, expected_direction == 1 ? "ASC" : "DESC", vector_scan_error_log);
-    }
-}
-
 }
 
 TreeRewriterResult::TreeRewriterResult(
@@ -1570,55 +1494,6 @@ NameSet TreeRewriterResult::getArrayJoinSourceNameSet() const
     return forbidden_columns;
 }
 
-inline String getMetricType(StorageMetadataPtr & metadata_snapshot, Search::DataType & vector_search_type, String & vec_col_name, ContextPtr context)
-{
-    /// The default value is float_vector_search_metric_type or binary_vector_search_metric_type in MergeTree, but we cannot get it here.
-    String metric_type;
-
-    if (metadata_snapshot)
-    {
-        /// Try to get from parameters of vector index on search vector column
-        for (const auto & vector_index_desc : metadata_snapshot->getVectorIndices())
-        {
-            if (vector_index_desc.column == vec_col_name)
-            {
-                const auto index_parameter = AIDB::convertPocoJsonToMap(vector_index_desc.parameters);
-                if (index_parameter.contains("metric_type"))
-                {
-                    /// Get metric_type in index definition
-                    metric_type = index_parameter.at("metric_type");
-                    break;
-                }
-            }
-        }
-
-        /// Try to get from storage settings in create table
-        if (metric_type.empty() && metadata_snapshot->hasSettingsChanges())
-        {
-            const auto settings_changes = metadata_snapshot->getSettingsChanges()->as<const ASTSetQuery &>().changes;
-            Field change_metric;
-            /// TODO: Try not to use string literals directly
-            if ((vector_search_type == Search::DataType::FloatVector && settings_changes.tryGet("float_vector_search_metric_type", change_metric)) ||
-                (vector_search_type == Search::DataType::BinaryVector && settings_changes.tryGet("binary_vector_search_metric_type", change_metric)))
-            {
-                metric_type = change_metric.safeGet<String>();
-            }
-        }
-    }
-
-    /// Try to get from merge tree settings in context
-    if (metric_type.empty())
-    {
-        const auto settings = context->getMergeTreeSettings();
-        if (vector_search_type == Search::DataType::FloatVector)
-            metric_type = settings.float_vector_search_metric_type.toString();
-        else if (vector_search_type == Search::DataType::BinaryVector)
-            metric_type = settings.binary_vector_search_metric_type.toString();
-    }
-
-    return metric_type;
-}
-
 std::optional<NameAndTypePair> TreeRewriterResult::collectSearchColumnType(
     String & search_col_name,
     String & func_col_name,
@@ -1748,18 +1623,16 @@ void TreeRewriterResult::collectForHybridSearchRelatedFunctions(
             function_name = TEXT_SEARCH_FUNCTION;
             expected_args_size = 2;
         }
-        else if (search_func_type == HybridSearchFuncType::HYBRID_SEARCH)
-        {
-            has_vector = true;
-            has_text = true;
-            function_name = HYBRID_SEARCH_FUNCTION;
-            expected_args_size = 4;
-        }
         else if (search_func_type == HybridSearchFuncType::SPARSE_SEARCH)
         {
             has_sparse = true;
             function_name = SPARSE_SEARCH_FUNCTION;
             expected_args_size = 2;
+        }
+        else if (search_func_type == HybridSearchFuncType::HYBRID_SEARCH)
+        {
+            function_name = HYBRID_SEARCH_FUNCTION;
+            expected_args_size = 4;
         }
 
         /// Support multiple distance functions
@@ -1767,7 +1640,6 @@ void TreeRewriterResult::collectForHybridSearchRelatedFunctions(
         StorageMetadataPtr metadata_snapshot = nullptr;
         bool table_is_remote = false; /// Mark if the storage with search column is distributed.
 
-        vector_scan_metric_types.resize(search_funcs_size);
         vector_search_types.resize(search_funcs_size);
 
         for (size_t i = 0; i < search_funcs_size; ++i)
@@ -1811,16 +1683,43 @@ void TreeRewriterResult::collectForHybridSearchRelatedFunctions(
             ASTPtr text_argument;
             ASTPtr sparse_argument;
 
-            /// Use the first argument in search function
-            /// vector column in vector scan and hybrid search, text column in text search
-            if (has_vector)
+            if (search_func_type == HybridSearchFuncType::HYBRID_SEARCH)
             {
-                vector_argument = arguments[0];
+                /// Support any two different types among [vector, text, sparse]
+                for (size_t arg_idx = 0; arg_idx < 2; ++arg_idx)
+                {
+                    ASTPtr arg = arguments[arg_idx];
+                    String col_name = arg ? arg->getColumnName() : "";
+                    auto search_column_type = collectSearchColumnType(col_name, function_col_name, tables_with_columns, context,
+                        arg, metadata_snapshot, table_is_remote);
 
-                /// hybrid search
-                if (has_text)
-                    text_argument = arguments[1];
+                    /// Infer the search argument type(vector, text, sparse) from the search column type
+                    switch (inferSearchModeInHybridSearch(search_column_type))
+                    {
+                        case HybridSearchFuncType::VECTOR_SCAN:
+                            vector_argument = arg;
+                            has_vector = true;
+                            search_func_in_hybrid_search.push_back(HybridSearchFuncType::VECTOR_SCAN);
+                            break;
+                        case HybridSearchFuncType::TEXT_SEARCH:
+                            text_argument = arg;
+                            has_text = true;
+                            search_func_in_hybrid_search.push_back(HybridSearchFuncType::TEXT_SEARCH);
+                            break;
+                        case HybridSearchFuncType::SPARSE_SEARCH:
+                            sparse_argument = arg;
+                            has_sparse = true;
+                            search_func_in_hybrid_search.push_back(HybridSearchFuncType::SPARSE_SEARCH);
+                            break;
+                        default:
+                            throw Exception(ErrorCodes::INCORRECT_DATA, "Hybrid search function only support columns with vector or Fts or sparse index.");
+                    }
+                }
+                if ((has_vector + has_text + has_sparse) != 2)
+                    throw Exception(ErrorCodes::SYNTAX_ERROR, "Hybrid search function only support two different types among [vector, text, sparse] in one query");
             }
+            else if (has_vector)
+                vector_argument = arguments[0];
             else if (has_text)
                 text_argument = arguments[0];
             else if (has_sparse)
@@ -1839,9 +1738,6 @@ void TreeRewriterResult::collectForHybridSearchRelatedFunctions(
 
                 auto vector_search_type = getSearchIndexDataType(search_vector_column_type->type);
                 vector_search_types[i] = vector_search_type;
-
-                vector_scan_metric_type = getMetricType(metadata_snapshot, vector_search_type, vector_col_name, context);
-                vector_scan_metric_types[i] = vector_scan_metric_type;
             }
 
             if (has_text)
@@ -1877,17 +1773,9 @@ void TreeRewriterResult::collectForHybridSearchRelatedFunctions(
             /// The direction of TextSearch/HybridSearch/SparseSearch func in order by should be DESC
             if (has_text || has_sparse)
                 checkOrderBySortDirection(function_name, select_query, -1);
-            else
-            {
-                /// When metric_type = IP in definition of vector index, order by must be DESC.
-                /// Skip the check when table is distributed or query has multiple distance functions
-                if (!table_is_remote && !has_multiple_distances)
-                {
-                    String metric_type = vector_scan_metric_type;
-                    Poco::toUpperInPlace(metric_type);
-                    checkOrderBySortDirection(function_name, select_query, metric_type == "IP" ? -1 : 1, metric_type, is_batch);
-                }
-            }
+
+            /// Support multiple vector indices on a single vector column
+            /// Delay the check of sort direction for vector search when vector index name is got from parameters
         }
 
         /// topk in multiple distance functions case should be 3 * k
@@ -2048,8 +1936,16 @@ TreeRewriterResultPtr TreeRewriter::analyzeSelect(
 
     getHybridSearchFunctions(query, select_query, result.hybrid_search_funcs, result.search_func_type);
 
+    // {
+    //     LOG_INFO(&Poco::Logger::get("TreeRewriter"), "result.search_func_type: {}", result.search_func_type);
+    //     for (const auto & func : result.hybrid_search_funcs)
+    //     {
+    //         LOG_INFO(&Poco::Logger::get("TreeRewriter"), "func tree: {}", func->dumpTree());
+    //     }
+    // }
+
     /// Add score_type column and fusion id columns for multiple-shard distributed hybrid search
-    /// fusion id columns: _shard_num, _part_index, _part_offset
+    /// fusion id columns: [_shard_num, _part_index, _part_offset]
     auto * distributed = dynamic_cast<StorageDistributed *>(const_cast<DB::IStorage *>(result.storage.get()));
     if (result.search_func_type == HybridSearchFuncType::HYBRID_SEARCH && distributed
         && distributed->getCluster()->getShardsInfo().size() > 1)

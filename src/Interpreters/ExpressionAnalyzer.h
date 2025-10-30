@@ -47,6 +47,9 @@ using String = std::string;
 /// The parameters that specify vector scan in HybridSearch() all have the same prefix.
 static inline constexpr auto vector_scan_parameter_prefix = "dense_";
 
+/// The parameters that specify sparse search in HybridSearch() all have the same prefix.
+static inline constexpr auto sparse_search_parameter_prefix = "sparse_";
+
 /// Create columns in block or return false if not possible
 bool sanitizeBlock(Block & block, bool throw_if_cannot_create_column = false);
 
@@ -255,8 +258,10 @@ protected:
         ASTPtr query_column,
         ASTPtr query_vector,
         int topk,
-        String vector_scan_metric_type,
         Search::DataType vector_search_type);
+
+    /// limit topk for index search，too large a topk can easily lead to OOM problems
+    int LimitTopKBySettings(int topk);
 
     void analyzeHybridSearch(ActionsDAG & temp_actions);
     bool makeHybridSearchInfo(ActionsDAG & actions);

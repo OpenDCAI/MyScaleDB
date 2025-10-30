@@ -29,6 +29,10 @@
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #pragma clang diagnostic ignored "-Wshadow"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#pragma clang diagnostic ignored "-Wundef"
+#pragma clang diagnostic ignored "-Wdocumentation"
+#pragma clang diagnostic ignored "-Wextra-semi-stmt"
+#pragma clang diagnostic ignored "-Wunreachable-code-fallthrough"
 #include <faiss/utils/hamming.h>
 #pragma clang diagnostic pop
 
@@ -36,6 +40,7 @@
 #pragma clang diagnostic ignored "-Wsign-compare"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
 #pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wundef"
 #include <faiss/utils/jaccard.h>
 #pragma clang diagnostic pop
 #endif
@@ -96,7 +101,7 @@ namespace AIDB
             if (metric_type == VIMetric::Hamming)
             {
                 LOG_DEBUG(log, "Metric is Hamming");
-                faiss::hammings_knn_mc(x, y, nx, ny, k, d / 8, reinterpret_cast<int32_t*>(distance), result_id, nullptr);
+                faiss::hammings_knn_mc(x, y, nx, ny, k, d / 8, distance, result_id, nullptr);
             }
             else if (metric_type == VIMetric::Jaccard)
             {

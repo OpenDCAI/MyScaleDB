@@ -1,7 +1,56 @@
 # MyScale Release Notes
 ## 2025
 
-### [v2.1.0](http://gitlab.originhub.tech/database/clickhouse/-/tags/myscale-v2.1.0) - 2025-07-02
+### [v2.3.0](http://gitlab.originhub.tech/database/clickhouse/-/tags/myscale-v2.3.0) - 2025-10-30
+
+Features & Improvements
+
+- Make batch distance production ready
+ [!36](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/36) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+- Integration RaBitQ for SCANN
+ [!38](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/38) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Support composite rotation for log
+ [!40](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/40) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+
+Fixes
+
+- Fix docker image build issue
+ [!42](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/42) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fix UDF call failure when executed via HTTP protocol
+ [!45](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/45) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+
+
+### [v2.2.0](http://gitlab.originhub.tech/database/clickhouse/-/tags/myscale-v2.2.0) - 2025-09-15
+
+Features & Improvements
+
+- Vector search support new analyzer
+ [!11](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/11) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+- Update the Faiss index to support the new vector quantization algorithm, RaBitQ
+ [!15](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/15) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Disallow metrics with different direction in multiple distances
+ [!19](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/19) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+- Enables enable_rough_filter_setting setting by default
+ [!20](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/20) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Support BFloat16 Type in Vector Index
+ [!23](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/23) ([Jianbin Hou](http://gitlab.originhub.tech/houjianbin)).
+- Enable Sparse Vector Querying within Hybrid Search
+ [!24](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/24) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+- Support Workload and Resource Manager
+ [!28](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/28) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+- Add Function generateSerielID() to Support Auto-incremental Columns in Table
+ [!32](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/32) ([Jianbin Hou](http://gitlab.originhub.tech/houjianbin)).
+
+Fixes
+
+- Fix hybrid search issue caused by incorrect rebase
+ [!27](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/27) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+- Fix OOM issue caused by large LIMIT
+ [!29](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/29) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Check the JSON parameter column name when creating a FTS index
+ [!34](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/34) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+
+### [v2.1.0](https://git.moqi.ai/mqdb/ClickHouse/-/tags/myscale-v2.1.0) - 2025-07-02
 
 Features & Improvements
 

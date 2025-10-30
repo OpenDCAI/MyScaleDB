@@ -92,6 +92,9 @@ void MergeTreeHybridSearchManager::executeSearchBeforeRead(const MergeTreeData::
 
     if (text_search_manager)
         text_search_manager->executeSearchBeforeRead(data_part);
+
+    if (sparse_search_manager)
+        sparse_search_manager->executeSearchBeforeRead(data_part);
 }
 
 void MergeTreeHybridSearchManager::executeSearchWithFilter(
@@ -104,11 +107,15 @@ void MergeTreeHybridSearchManager::executeSearchWithFilter(
 
     if (text_search_manager)
         text_search_manager->executeSearchWithFilter(data_part, read_ranges, filter);
+
+    if (sparse_search_manager)
+        sparse_search_manager->executeSearchWithFilter(data_part, read_ranges, filter);
 }
 
+/// Do fusion on two search results with different search types.
 ScoreWithPartIndexAndLabels MergeTreeHybridSearchManager::hybridSearch(
-    const ScoreWithPartIndexAndLabels & vec_scan_result_with_part_index,
-    const ScoreWithPartIndexAndLabels & text_search_result_with_part_index,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_0,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_1,
     const HybridSearchInfoPtr & hybrid_info,
     LoggerPtr log)
 {
@@ -125,9 +132,7 @@ ScoreWithPartIndexAndLabels MergeTreeHybridSearchManager::hybridSearch(
         LOG_DEBUG(log, "Use Relative Score Fusion");
         /// Get fusion weight, assume fusion_weight is handled by ExpressionAnalyzer
         float weight = hybrid_info->fusion_weight;
-        /// Use direction in vector scan info
-        int vec_scan_direction = hybrid_info->vector_scan_info ? hybrid_info->vector_scan_info->vector_scan_descs[0].direction : 1;
-        RelativeScoreFusion(part_index_labels_with_fusion_score, vec_scan_result_with_part_index, text_search_result_with_part_index, weight, vec_scan_direction, log);
+        RelativeScoreFusion(part_index_labels_with_fusion_score, result_with_part_index_0, result_with_part_index_1, weight, log);
     }
     else
     {
@@ -136,7 +141,7 @@ ScoreWithPartIndexAndLabels MergeTreeHybridSearchManager::hybridSearch(
 
         /// Assume fusion_k is handled by ExpressionAnalyzer
         int fusion_k = hybrid_info->fusion_k <= 0 ? 60 : hybrid_info->fusion_k;
-        RankFusion(part_index_labels_with_fusion_score, vec_scan_result_with_part_index, text_search_result_with_part_index, fusion_k, log);
+        RankFusion(part_index_labels_with_fusion_score, result_with_part_index_0, result_with_part_index_1, fusion_k, log);
     }
 
     /// Sort hybrid search result based on fusion score and return top-k rows.

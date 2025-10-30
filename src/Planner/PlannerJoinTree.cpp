@@ -872,6 +872,16 @@ JoinTreeQueryPlan buildQueryPlanForTableExpression(QueryTreeNodePtr table_expres
                 if (other_table_already_chosen_for_reading_with_parallel_replicas)
                     planner_context->getMutableQueryContext()->setSetting("allow_experimental_parallel_reading_from_replicas", Field(0));
 
+                /// Check if special search analysis result belongs to this table
+                if (table_expression_query_info.has_hybrid_search)
+                {
+                    if (auto table_source_lock = table_expression_query_info.search_source_weak_pointer.lock())
+                    {
+                        if (!table_source_lock->isEqual(*table_expression))
+                            table_expression_query_info.has_hybrid_search = false;
+                    }
+                }
+
                 storage->read(
                     query_plan,
                     columns_names,
@@ -894,7 +904,7 @@ JoinTreeQueryPlan buildQueryPlanForTableExpression(QueryTreeNodePtr table_expres
                 };
 
                 /// query_plan can be empty if there is nothing to read
-                if (query_plan.isInitialized() && parallel_replicas_enabled_for_storage(storage, settings))
+                if (!select_query_info.has_hybrid_search && query_plan.isInitialized() && parallel_replicas_enabled_for_storage(storage, settings))
                 {
                     // (1) find read step
                     QueryPlan::Node * node = query_plan.getRootNode();
@@ -1055,6 +1065,113 @@ JoinTreeQueryPlan buildQueryPlanForTableExpression(QueryTreeNodePtr table_expres
     }
     else if (query_node || union_node)
     {
+        /// Need to push search function to subquery
+        if (select_query_info.has_hybrid_search && query_node)
+        {
+            /// Get special search column result name
+            std::vector<String> func_cols_name; /// Support multiple distances
+            std::set<String> search_columns_name; /// vector column or text column name
+            bool is_batch = false;
+            if (select_query_info.vector_scan_info)
+            {
+                is_batch = select_query_info.vector_scan_info->is_batch;
+                for (const auto & vec_scan_desc : select_query_info.vector_scan_info->vector_scan_descs)
+                {
+                    func_cols_name.push_back(vec_scan_desc.column_name);
+                    search_columns_name.insert(vec_scan_desc.search_column_name);
+                }
+            }
+            else if (select_query_info.text_search_info)
+            {
+                func_cols_name.push_back(select_query_info.text_search_info->function_column_name);
+                search_columns_name.insert(select_query_info.text_search_info->text_column_name);
+            }
+            else if (select_query_info.hybrid_search_info)
+            {
+                func_cols_name.push_back(select_query_info.hybrid_search_info->function_column_name);
+                auto vector_scan_info = select_query_info.hybrid_search_info->vector_scan_info;
+                auto text_search_info = select_query_info.hybrid_search_info->text_search_info;
+                if (vector_scan_info)
+                    search_columns_name.insert(vector_scan_info->vector_scan_descs[0].search_column_name);
+                if (text_search_info)
+                    search_columns_name.insert(text_search_info->text_column_name);
+            }
+
+            /// Remove unneeded search column names from projections of the subquery if not exist in main query
+            auto const & main_query_node = select_query_info.query_tree->as<QueryNode const &>();
+            const auto & main_query_project_columns = main_query_node.getProjectionColumns();
+            std::set<String> used_search_columns_in_main_query;
+            for (const auto & main_query_project_col : main_query_project_columns)
+            {
+                if (search_columns_name.count(main_query_project_col.name))
+                    used_search_columns_in_main_query.insert(main_query_project_col.name);
+            }
+
+            QueryTreeNodePtr search_column_source;  /// Use the column source of a search column
+
+            /// Get column source from a search column
+            for (const auto & project_node : query_node->getProjection().getNodes())
+            {
+                auto project_col_node = project_node->as<ColumnNode>();
+                if (!project_col_node)
+                    continue;
+
+                String column_name = project_col_node->getColumnName();
+                /// Get the column node for a search column
+                if (search_columns_name.count(column_name))
+                {
+                    /// Save column source
+                    if (!search_column_source)
+                        search_column_source = project_col_node->getColumnSourceOrNull();
+                }
+
+                if (search_column_source)
+                    break;
+            }
+
+            /// First remove unused search columns from subquery
+            std::unordered_set<String> used_project_cols;
+            for (const auto & project_column : query_node->getProjectionColumns())
+            {
+                if (search_columns_name.count(project_column.name) &&
+                    !used_search_columns_in_main_query.count(project_column.name))
+                    continue;
+                used_project_cols.insert(project_column.name);
+            }
+
+            query_node->removeUnusedProjectionColumns(used_project_cols);
+
+            /// Second, add special search column name to select list of subquery
+            DataTypePtr func_col_type;
+            if (is_batch)
+            {
+                auto id_type = std::make_shared<DataTypeUInt32>();
+                auto distance_type = std::make_shared<DataTypeFloat32>();
+                DataTypes types;
+                types.emplace_back(id_type);
+                types.emplace_back(distance_type);
+                func_col_type = std::make_shared<DataTypeTuple>(types);
+            }
+            else
+                func_col_type = std::make_shared<DataTypeFloat32>();
+
+            auto & projection_nodes = query_node->getProjection().getNodes();
+            NamesAndTypes projection_columns = query_node->getProjectionColumns();
+            for (const auto & func_col_name : func_cols_name)
+            {
+                if (table_expression_data.hasColumn(func_col_name))
+                {
+                    NameAndTypePair special_search_column{func_col_name, func_col_type};
+                    auto special_search_col_node = std::make_shared<ColumnNode>(special_search_column, search_column_source);
+                    projection_nodes.push_back(std::move(special_search_col_node));
+
+                    projection_columns.push_back(special_search_column);
+                }
+            }
+
+            query_node->resolveProjectionColumns(projection_columns);
+        }
+
         if (select_query_options.only_analyze)
         {
             auto projection_columns = query_node ? query_node->getProjectionColumns() : union_node->computeProjectionColumns();
@@ -1077,6 +1194,23 @@ JoinTreeQueryPlan buildQueryPlanForTableExpression(QueryTreeNodePtr table_expres
 
             auto subquery_options = select_query_options.subquery();
             Planner subquery_planner(table_expression, subquery_options, subquery_planner_context);
+
+            /// If there is special search in the outer query and main table is subquery,
+            /// save the special search info to subquery's context.
+            if (select_query_info.has_hybrid_search && subquery_planner.getPlannerContext())
+            {
+                auto & mutable_context = subquery_planner.getPlannerContext()->getMutableQueryContext();
+                if (select_query_info.vector_scan_info)
+                {
+                    auto vector_scan_desc_ptr = std::make_shared<VSDescriptions>(select_query_info.vector_scan_info->vector_scan_descs);
+                    mutable_context->setVecScanDescriptions(vector_scan_desc_ptr);
+                }
+                else if (select_query_info.text_search_info)
+                    mutable_context->setTextSearchInfo(select_query_info.text_search_info);
+                else if (select_query_info.hybrid_search_info)
+                    mutable_context->setHybridSearchInfo(select_query_info.hybrid_search_info);
+            }
+
             /// Propagate storage limits to subquery
             subquery_planner.addStorageLimits(*select_query_info.storage_limits);
             subquery_planner.buildQueryPlanIfNeeded();

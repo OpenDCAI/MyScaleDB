@@ -5,6 +5,7 @@
 #include <Analyzer/Utils.h>
 #include <Analyzer/InDepthQueryTreeVisitor.h>
 #include <Analyzer/ColumnNode.h>
+#include <Analyzer/FunctionNode.h>
 #include <Analyzer/QueryNode.h>
 #include <Analyzer/TableNode.h>
 #include <Analyzer/TableFunctionNode.h>
@@ -13,6 +14,8 @@
 
 #include <Planner/PlannerContext.h>
 #include <Planner/PlannerActionsVisitor.h>
+
+#include <AIDB/Analyzer/SpecialSearchFunctionsUtils.h>
 
 namespace DB
 {
@@ -34,11 +37,59 @@ public:
         , keep_alias_columns(keep_alias_columns_)
     {}
 
+    /// Add search function column name to source vector column's table expression data
+    void visitSpecialSearchFunc(QueryTreeNodePtr & node)
+    {
+        auto * function_node = node->as<FunctionNode>();
+        if (!function_node || !function_node->isSpecialSearchFunction())
+            return;
+
+        auto special_search_func = function_node->getSpecialSearchFunction();
+        if (!special_search_func)
+            return;
+
+        String func_col_name = special_search_func->getResultColumnName();
+
+        /// Find table expression data of the source vector/text column in a search function
+        auto search_column_source_node = getColumnSourceForSpecialSearchFunc(node);
+        if (!search_column_source_node)
+            return;
+
+        auto & table_expression_data = planner_context->getOrCreateTableExpressionData(search_column_source_node);
+
+        bool column_already_exists = table_expression_data.hasColumn(func_col_name);
+        if (column_already_exists)
+        {
+            /// Column may be added when we collected data for ALIAS column
+            /// But now we see it directly in the query, so make sure it's marked as selected
+            if (select_added_columns)
+                table_expression_data.markSelectedColumn(func_col_name);
+
+            if (const auto * column_identifier = table_expression_data.getColumnIdentifierOrNull(func_col_name))
+                special_search_func->setColumnIdentifier(*column_identifier);
+
+            return;
+        }
+
+        /// Construct a ColumnNode for search function
+        NameAndTypePair new_column(func_col_name, function_node->getResultType());
+        auto search_result_column_node = std::make_shared<ColumnNode>(new_column, search_column_source_node);
+
+        auto column_identifier = planner_context->getGlobalPlannerContext()->createColumnIdentifier(search_result_column_node);
+        table_expression_data.addColumn(search_result_column_node->getColumn(), column_identifier, select_added_columns);
+
+        special_search_func->setColumnIdentifier(column_identifier);
+    }
+
     void visitImpl(QueryTreeNodePtr & node)
     {
         auto * column_node = node->as<ColumnNode>();
         if (!column_node)
+        {
+            if (isSpecialSearchFunction(node))
+                visitSpecialSearchFunc(node);
             return;
+        }
 
         if (column_node->getColumnName() == "__grouping_set")
             return;
@@ -138,12 +189,22 @@ public:
                column_source->getNodeType() != QueryTreeNodeType::ARRAY_JOIN;
     }
 
+    static bool isSpecialSearchFunction(const QueryTreeNodePtr & node)
+    {
+        const auto * function_node = node->as<FunctionNode>();
+        if (!function_node)
+            return false;
+
+        return function_node->isSpecialSearchFunction();
+    }
+
     static bool needChildVisit(const QueryTreeNodePtr & parent_node, const QueryTreeNodePtr & child_node)
     {
         auto child_node_type = child_node->getNodeType();
         return !(child_node_type == QueryTreeNodeType::QUERY ||
                  child_node_type == QueryTreeNodeType::UNION ||
-                 isAliasColumn(parent_node));
+                 isAliasColumn(parent_node) ||
+                 isSpecialSearchFunction(parent_node)); /// Skip to collect child in search functions
     }
 
     void setKeepAliasColumns(bool keep_alias_columns_)

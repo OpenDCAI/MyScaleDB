@@ -111,8 +111,6 @@ void CompletedPipelineExecutor::execute()
         PipelineExecutor executor(pipeline.processors, pipeline.process_list_element);
         executor.setReadProgressCallback(pipeline.getReadProgressCallback());
         executor.execute(pipeline.getNumThreads(), pipeline.getConcurrencyControl());
-        if (executor.isCancelled())
-            cancelled = true;
     }
 }
 
