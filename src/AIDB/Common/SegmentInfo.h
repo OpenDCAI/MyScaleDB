@@ -1,0 +1,97 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include <memory>
+#include <vector>
+#include <base/types.h>
+#include <Common/CurrentMetrics.h>
+#include <Common/Stopwatch.h>
+#include <AIDB/Storages/VIDescriptions.h>
+#include <AIDB/Common/SegmentStatus.h>
+#include <AIDB/Common/VICommon.h>
+
+namespace DB
+{
+
+class SegmentInfo
+{
+public:
+    SegmentInfo(
+        const VIDescription & vec_desc,
+        const IMergeTreeDataPart & data_part,
+        const String & owner_part_name,
+        const UInt8 own_part_id,
+        const AIDB::SegmentStatusPtr & status_,
+        const AIDB::VIType & index_type,
+        const UInt64 index_dimension,
+        const UInt64 total_vectors,
+        const UInt64 memory_usage,
+        const UInt64 disk_usage)
+        : database(data_part.storage.getStorageID().database_name),
+          table(data_part.storage.getStorageID().table_name),
+          part(data_part.name),
+          owner_part(owner_part_name),
+          owner_part_id(own_part_id),
+          name(vec_desc.name),
+          type(Search::enumToString(index_type)),
+          dimension(index_dimension),
+          total_vec(total_vectors),
+          memory_usage_bytes(memory_usage),
+          disk_usage_bytes(disk_usage),
+          status(AIDB::SegmentStatus(status_->getStatus(), status_->getErrMsg())),
+          elapsed_time(status_->getElapsedTime())
+    {}
+
+    String database;
+    String table;
+    String part;
+
+    /// For vector index from merged old part
+    String owner_part;
+    Int32 owner_part_id;
+
+    /// Index name
+    String name;
+    /// Index type
+    String type;
+    /// Index dimension
+    UInt64 dimension;
+    /// Total number of vectors (including deleted ones)
+    UInt64 total_vec;
+
+    // size of vector index in memory
+    UInt64 memory_usage_bytes = 0;
+    // Size of vector index on disk
+    UInt64 disk_usage_bytes = 0;
+
+    AIDB::SegmentStatus status;
+
+    UInt64 elapsed_time{0};
+
+    /// Index building progress
+    UInt8 progress() const { return status.getStatus() == AIDB::SegmentStatus::BUILT || status.getStatus() == AIDB::SegmentStatus::LOADED ? 100 : 0; }
+
+    String statusString() const
+    {
+        return status.statusToString();
+    }
+};
+
+using SegmentInfoPtr = std::shared_ptr<SegmentInfo>;
+using SegmentInfoPtrList = std::vector<SegmentInfoPtr>;
+
+}

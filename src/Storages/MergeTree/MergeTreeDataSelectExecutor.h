@@ -96,7 +96,7 @@ private:
         UncompressedCache * uncompressed_cache,
         LoggerPtr log);
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     static MarkRanges generateMarkRangesFromTantivy(
         MergeTreeIndexPtr index_helper,
         MergeTreeIndexConditionPtr condition,

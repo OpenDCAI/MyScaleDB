@@ -120,9 +120,9 @@
 #include <thread>
 #include <future>
 
-#include <VectorIndex/Cache/VICacheManager.h>
-#include <VectorIndex/Storages/ReplicatedVITask.h>
-#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
+#include <AIDB/Cache/VICacheManager.h>
+#include <AIDB/Storages/ReplicatedVITask.h>
+#include <AIDB/Common/StorageVectorIndicesMgr.h>
 
 namespace fs = std::filesystem;
 
@@ -5351,8 +5351,11 @@ void StorageReplicatedMergeTree::startupImpl(bool from_attach_thread)
 
         vi_manager->startup();
 
-#if USE_TANTIVY_SEARCH
-        updateTantivyIndexCache();
+#if USE_FTS_INDEX
+        startupCustomSkipIndexCache(CustomIndexType::TantivyIndex);
+#endif
+#if USE_SPARSE_INDEX
+        startupCustomSkipIndexCache(CustomIndexType::SparseIndex);
 #endif
         /// Activate replica in a separate thread if we are not calling from attach thread
         restarting_thread.start(/*schedule=*/!from_attach_thread);

@@ -89,6 +89,7 @@ public:
             bool reconnect_,
             bool display_client_side_time_,
             bool print_stacktrace_,
+            bool use_ms_time_,
             const Settings & settings_)
         :
         round_robin(round_robin_),
@@ -108,6 +109,7 @@ public:
         reconnect(reconnect_),
         display_client_side_time(display_client_side_time_),
         print_stacktrace(print_stacktrace_),
+        use_ms_time(use_ms_time_),
         settings(settings_),
         shared_context(Context::createShared()),
         global_context(Context::createGlobal(shared_context.get())),
@@ -216,6 +218,7 @@ private:
     bool reconnect;
     bool display_client_side_time;
     bool print_stacktrace;
+    bool use_ms_time;
     const Settings & settings;
     SharedContextHolder shared_context;
     ContextMutablePtr global_context;
@@ -486,8 +489,8 @@ private:
         executor.finish();
 
         double duration = (display_client_side_time || progress.elapsed_ns == 0)
-            ? watch.elapsedSeconds()
-            : progress.elapsed_ns / 1e9;
+            ? (use_ms_time ? watch.elapsedMilliseconds() : watch.elapsedSeconds())
+            : (use_ms_time ? progress.elapsed_ns / 1e6 : progress.elapsed_ns / 1e9);
 
         std::lock_guard lock(mutex);
 
@@ -543,7 +546,25 @@ private:
             std::cerr << percent << "%\t\t";
             for (const auto & info : infos)
             {
-                std::cerr << info->sampler.quantileNearest(percent / 100.0) << " sec.\t";
+                std::cerr << info->sampler.quantileNearest(percent / 100.0);
+                if (use_ms_time)
+                    std::cerr << " ms.\t";
+                else
+                    std::cerr << " sec.\t";
+            }
+            std::cerr << "\n";
+        };
+
+        auto print_avg_latency = [&]()
+        {
+            std::cerr << "Avg Latency" << "\t";
+            for (const auto & info : infos)
+            {
+                std::cerr << info->sampler.quantileAvgLatency();
+                if (use_ms_time)
+                    std::cerr << " ms.\t";
+                else
+                    std::cerr << " sec.\t";
             }
             std::cerr << "\n";
         };
@@ -555,6 +576,8 @@ private:
         print_percentile(99);
         print_percentile(99.9);
         print_percentile(99.99);
+
+        print_avg_latency();
 
         std::cerr << "\n" << t_test.compareAndReport(confidence).second << "\n";
 
@@ -580,6 +603,7 @@ int mainEntryClickHouseBenchmark(int argc, char ** argv)
 {
     using namespace DB;
     bool print_stacktrace = true;
+    bool use_ms = false;
 
     try
     {
@@ -630,6 +654,7 @@ int mainEntryClickHouseBenchmark(int argc, char ** argv)
             ("ignore-error,continue_on_errors", "continue testing even if a query fails")
             ("reconnect", "establish new connection for every query")
             ("client-side-time", "display the time including network communication instead of server-side time; note that for server versions before 22.8 we always display client-side time")
+            ("use-millisecond-time", "display the qps time by millisecond time")
         ;
 
         Settings settings;
@@ -650,6 +675,7 @@ int mainEntryClickHouseBenchmark(int argc, char ** argv)
         }
 
         print_stacktrace = options.count("stacktrace");
+        use_ms = options.count("use-millisecond-time");
 
         /// NOTE Maybe clickhouse-benchmark should also respect .xml configuration of clickhouse-client.
 
@@ -687,6 +713,7 @@ int mainEntryClickHouseBenchmark(int argc, char ** argv)
             options.count("reconnect"),
             options.count("client-side-time"),
             print_stacktrace,
+            use_ms,
             settings);
         return benchmark.run();
     }

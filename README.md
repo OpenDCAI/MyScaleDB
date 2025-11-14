@@ -68,13 +68,11 @@ It not only saves infrastructure and maintenance costs, but enables joint data q
 To quickly get a MyScaleDB instance up and running, get the docker image:
 
 ```bash
-wget  https://originhub-public.oss-cn-beijing.aliyuncs.com/image/myscaledb-amd64-v2-0-0.tar
-
-cat ./myscaledb-amd64-v2-0-0.tar | docker import - myscaledb-v2.0.0
+docker pull origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/aidb-public/myscaledb:2.1.0
 ```
 
 ```bash
-docker run -v /etc/clickhouse/data:/container/data --name myscaledb --net=host myscaledb-v2.0.0
+docker run -v /etc/clickhouse/data:/container/data --name myscaledb --net=host origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/aidb-public/myscaledb:2.1.0
 ```
 
 >Note: Myscale's default configuration only allows localhost ip access. For the docker run startup method, you need to specify `--net=host` to access services deployed in docker mode on the current node.
@@ -108,7 +106,7 @@ version: '3.7'
 
 services:
   myscaledb:
-    image: myscale/myscaledb:2.0.0
+    image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/aidb-public/myscaledb:2.1.0
     tty: true
     ports:
       - '8123:8123'

@@ -111,11 +111,15 @@
 #include <filesystem>
 #include <unordered_set>
 
-#include <VectorIndex/Common/VIBuildMemoryUsageHelper.h>
-#include <VectorIndex/Common/VICommon.h>
+#include <AIDB/Common/VIBuildMemoryUsageHelper.h>
+#include <AIDB/Common/VICommon.h>
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 #    include <tantivy_search.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <sparse_index.h>
 #endif
 
 #include "config.h"
@@ -376,6 +380,7 @@ void setOOMScore(int value, LoggerRawPtr log)
 }
 #endif
 
+#if USE_FTS_INDEX
 extern "C" void tantivy_log_callback(int level, const char * thread_info, const char * message)
 {
 #if defined(MEMORY_SANITIZER)
@@ -415,17 +420,67 @@ void tantivy_log_integration(Poco::Util::AbstractConfiguration & config)
 {
     std::string tantivy_search_log_level = config.getString("logger.tantivy_search_log_level", config.getString("logger.level", "info"));
 
-#if USE_TANTIVY_SEARCH
     tantivy_search_log4rs_initialize_with_callback(
-        "", // Path for storing the `tantivy-search` log file.
-        tantivy_search_log_level.c_str(), // Sets the log level for `tantivy-search`, defaulting to the same log level as ClickHouse.
-        false, // `tantivy-search` log content will be recorded to a specific log file.
-        false, // Flag to control whether `tantivy-search` log messages are displayed in the console/terminal.
-        true, // If true, logs are exclusively recorded for `tantivy_search` and not for its submodule libraries (e.g., tantivy).
-        tantivy_log_callback // Logging `tantivy_search` logs using POCO LOG.
+        "",                                 // Path for storing the `tantivy-search` log file.
+        tantivy_search_log_level.c_str(),   // Sets the log level for `tantivy-search`, defaulting to the same log level as ClickHouse.
+        false,                              // `tantivy-search` log content will be recorded to a specific log file.
+        false,                              // Flag to control whether `tantivy-search` log messages are displayed in the console/terminal.
+        true,                               // If true, logs are exclusively recorded for `tantivy_search` and not for its submodule libraries (e.g., tantivy).
+        tantivy_log_callback                // Logging `tantivy_search` logs using POCO LOG.
     );
-#endif
 }
+#endif
+
+#if USE_SPARSE_INDEX
+extern "C" void sparse_log_callback(int level, const char * thread_info, const char * message)
+{
+#if defined(MEMORY_SANITIZER)
+    __msan_unpoison_string(thread_info);
+    __msan_unpoison_string(message);
+#endif
+    // Ensure that null pointers are replaced with empty strings
+    const char * safe_thread_info = thread_info ? thread_info : "";
+    const char * safe_message = message ? message : "";
+    Poco::Logger & logger = Poco::Logger::get("SparseIndexLibrary");
+    switch (level)
+    {
+        case -2: // -2 -> fatal
+            LOG_FATAL(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case -1: // -1 -> error
+            LOG_ERROR(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 0: // 0 -> warning
+            LOG_WARNING(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 1: // 1 -> info
+            LOG_INFO(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 2: // 2 -> debug
+            LOG_DEBUG(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 3: // 3 -> tracing
+            LOG_TRACE(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        default:
+            LOG_DEBUG(&logger, "{} - {}", safe_thread_info, safe_message);
+    }
+}
+
+void sparse_log_integration(Poco::Util::AbstractConfiguration & config)
+{
+    std::string sparse_search_log_level = config.getString("logger.sparse_search_log_level", config.getString("logger.level", "info"));
+
+    sparse_index_log4rs_initialize_with_callback(
+        "",                                 // Path for storing the `sparse-index` log file.
+        sparse_search_log_level.c_str(),    // Sets the log level for `sparse-index`, defaulting to the same log level as ClickHouse.
+        false,                              // `sparse-index` log content will be recorded to a specific log file.
+        false,                              // Flag to control whether `sparse-search` log messages are displayed in the console/terminal.
+        true,                               // If true, logs are exclusively recorded for `sparse_search` and not for its submodule libraries (e.g., sparse).
+        sparse_log_callback                 // Logging `sparse_search` logs using POCO LOG.
+    );
+}
+#endif
 
 
 void Server::uninitialize()
@@ -459,8 +514,11 @@ void Server::initialize(Poco::Util::Application & self)
     ConfigProcessor::registerEmbeddedConfig("config.xml", std::string_view(reinterpret_cast<const char *>(gresource_embedded_xmlData), gresource_embedded_xmlSize));
     BaseDaemon::initialize(self);
     logger().information("starting up");
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     tantivy_log_integration(config());
+#endif
+#if USE_SPARSE_INDEX
+    sparse_log_integration(config());
 #endif
     LOG_INFO(&logger(), "OS name: {}, version: {}, architecture: {}",
         Poco::Environment::osName(),
@@ -1403,13 +1461,26 @@ try
         fs::create_directories(vector_index_cache_path);
     }
 
+#if USE_FTS_INDEX
     {
-#if USE_TANTIVY_SEARCH
-        std::string tantivy_index_cache_path = config().getString("tantivy_index_cache_path", path / "tantivy_index_cache/");
-        global_context->setTantivyIndexCachePath(tantivy_index_cache_path);
-        fs::create_directories(tantivy_index_cache_path);
-#endif
+        if (config().has("tantivy_index_cache_path"))
+        {
+            throw Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "the setting `tantivy_index_cache_path` is deprecated, please use `tantivy_index_store_path` instead.");
+        }
+
+        std::string tantivy_index_store_path = config().getString("tantivy_index_store_path", path / "tantivy_index_store/");
+        global_context->setTantivyIndexStorePath(tantivy_index_store_path);
+        fs::create_directories(tantivy_index_store_path);
     }
+#endif
+
+#if USE_SPARSE_INDEX
+    {
+        std::string sparse_index_store_path = config().getString("sparse_index_store_path", path / "sparse_index_store/");
+        global_context->setSparseIndexStorePath(sparse_index_store_path);
+        fs::create_directories(sparse_index_store_path);
+    }
+#endif
 
     /// top_level_domains_lists
     {
@@ -1696,7 +1767,7 @@ try
             const size_t vector_index_cache_max_size = static_cast<size_t>(max_memory_usage * vector_index_cache_ratio);
             LOG_INFO(log, "vector_index_cache_max_size = {}", formatReadableSizeWithBinarySuffix(vector_index_cache_max_size));
 
-            VectorIndex::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(vector_index_cache_max_size);
+            AIDB::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(vector_index_cache_max_size);
 
             /// Set vector index build memory limit
             float vector_index_build_ratio = server_settings.vector_index_build_size_ratio_of_memory;
@@ -1709,14 +1780,17 @@ try
             const size_t vector_index_build_max_size = static_cast<size_t>(max_memory_usage * vector_index_build_ratio);
             LOG_INFO(log, "vector_index_build_max_size = {}", formatReadableSizeWithBinarySuffix(vector_index_build_max_size));
 
-            VectorIndex::VIBuildMemoryUsageHelper::setBuildMemorySizeInBytes(vector_index_build_max_size);
+            AIDB::VIBuildMemoryUsageHelper::setBuildMemorySizeInBytes(vector_index_build_max_size);
 
             // FIXME logging-related things need synchronization -- see the 'Logger * log' saved
             // in a lot of places. For now, disable updating log configuration without server restart.
             //setTextLog(global_context->getTextLog());
             updateLevels(*config, logger());
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
             tantivy_log_integration(*config);
+#endif
+#if USE_SPARSE_INDEX
+            sparse_log_integration(*config);
 #endif
             global_context->setClustersConfig(config, has_zookeeper);
             global_context->setMacros(std::make_unique<Macros>(*config, "macros", log));

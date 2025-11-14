@@ -522,6 +522,12 @@ include (cmake/print_flags.cmake)
 if (ENABLE_RUST)
     add_subdirectory (rust)
 
+    # Define USE_FTS_INDEX for FTS(tantivy) Index
+    add_definitions(-DUSE_FTS_INDEX=1)
+
+    # Define USE_SPARSE_INDEX for Sparse Index
+    add_definitions(-DUSE_SPARSE_INDEX=1)
+
     # With LTO Rust adds few symbols with global visiblity, the most common is
     # rust_eh_personality. And this leads to linking errors because multiple
     # Rust libraries contains the same symbol.

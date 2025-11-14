@@ -74,7 +74,7 @@ void registerTableFunctionFullTextSearch(TableFunctionFactory & factory);
 
 void registerTableFunctions();
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 void registerTableFunctionFtsIndex(TableFunctionFactory & factory);
 #endif
 

@@ -823,6 +823,16 @@ The server successfully detected this situation and will download merged part fr
     M(NotCreatedLogEntryForBuildVIndex, "Log entry to to build vector index for part in ReplicatedMergeTree is not created due to concurrent log update by another replica.") \
     M(ReplicatedPartVectorIndexFetches, "Number of times a vector index in a data part was downloaded from replica of a ReplicatedMergeTree table.") \
     M(ReplicatedPartVectorIndexFailedFetches, "Number of times a vector index in a data part was failed to download from replica of a ReplicatedMergeTree table.") \
+    \
+    M(TantivyIndexRemoveCacheCounts, "Number of remove tantivy index cache") \
+    M(TantivyIndexMutateCounts, "Number of mutate tantivy index cache") \
+    M(TantivyIndexRenamePartCounts, "Number of rename part tantivy index cache") \
+    M(TantivyIndexDropIndexCounts, "Number of drop index tantivy index cache") \
+    \
+    M(SparseIndexRemoveCacheCounts, "Number of remove sparse index cache") \
+    M(SparseIndexMutateCounts, "Number of mutate sparse index cache") \
+    M(SparseIndexRenamePartCounts, "Number of rename part sparse index cache") \
+    M(SparseIndexDropIndexCounts, "Number of drop sparse index cache") \
 
 #ifdef APPLY_FOR_EXTERNAL_EVENTS
     #define APPLY_FOR_EVENTS(M) APPLY_FOR_BUILTIN_EVENTS(M) APPLY_FOR_EXTERNAL_EVENTS(M)

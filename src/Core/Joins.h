@@ -119,4 +119,6 @@ enum class JoinTableSide : uint8_t
 
 const char * toString(JoinTableSide join_table_side);
 
+JoinKind reverseJoinKind(JoinKind kind);
+
 }

@@ -16,7 +16,7 @@
 
 #include <Common/ZooKeeper/ZooKeeper.h>
 
-#include <VectorIndex/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
+#include <AIDB/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
 
 namespace DB
 {

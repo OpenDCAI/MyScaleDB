@@ -37,12 +37,19 @@
 #include <Core/ColumnsWithTypeAndName.h>
 
 
-#if USE_TANTIVY_SEARCH
-#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Factory/SparseIndexFactory.h>
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
 #endif
-#include <VectorIndex/Common/VICommon.h>
-#include <VectorIndex/Common/SegmentsMgr.h>
-#include <VectorIndex/Utils/VIUtils.h>
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Factory/SparseIndexFactory.h>
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
+#endif
+
+#include <AIDB/Common/VICommon.h>
+#include <AIDB/Common/SegmentsMgr.h>
+#include <AIDB/Utils/VIUtils.h>
 
 
 namespace ProfileEvents
@@ -807,8 +814,8 @@ static NameSet collectFilesToSkip(
     return files_to_skip;
 }
 
-#if USE_TANTIVY_SEARCH
-static void removeTantivyIndexCache(MergeTreeData::DataPartPtr source_part, const MutationCommands & commands_for_removes)
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+static void removeCustomSkipIndexCache(MergeTreeData::DataPartPtr source_part, const MutationCommands & commands_for_removes)
 {
     for (const auto & command : commands_for_removes)
     {
@@ -817,12 +824,14 @@ static void removeTantivyIndexCache(MergeTreeData::DataPartPtr source_part, cons
             String skp_idx_name = INDEX_FILE_PREFIX + command.column_name;
             String source_data_part_relative_path = source_part->getDataPartStoragePtr()->getRelativePath();
             LOG_INFO(
-                getLogger("removeTantivyIndexCache"),
+                getLogger("removeCustomSkipIndexCache"),
                 "INDEX_FILE_PREFIX: {}, command.column_name: {}, part relative_path: {}",
                 INDEX_FILE_PREFIX,
                 command.column_name,
                 source_part->getDataPartStoragePtr()->getRelativePath());
-            TantivyIndexStoreFactory::instance().dropIndex(skp_idx_name, source_part->getDataPartStoragePtr());
+            // It is not necessary to have these keys in the stores
+            TantivyIndexFactory::instance().dropIndex(skp_idx_name, source_part->getDataPartStoragePtr());
+            SparseIndexFactory::instance().dropIndex(skp_idx_name, source_part->getDataPartStoragePtr());
         }
     }
 }
@@ -856,9 +865,13 @@ static NameToNameVector collectFilesForRenames(
         {
             static const std::array<String, 2> suffixes = {".idx2", ".idx"};
             static const std::array<String, 4> gin_suffixes = {".gin_dict", ".gin_post", ".gin_seg", ".gin_sid"}; /// .gin_* means generalized inverted index (aka. full-text-index)
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
             static const std::array<String, 2> tantivy_suffixes
-                = {TANTIVY_INDEX_OFFSET_FILE_TYPE, TANTIVY_INDEX_DATA_FILE_TYPE}; // tantivy index files
+                = {TANTIVY_INDEX_META_FILE_SUFFIX, TANTIVY_INDEX_DATA_FILE_SUFFIX}; // tantivy index files
+#endif
+#if USE_SPARSE_INDEX
+            static const std::vector<String> sparse_suffixes
+                = {SPARSE_INDEX_META_FILE_SUFFIX, SPARSE_INDEX_DATA_FILE_SUFFIX}; // sparse index files
 #endif
 
             for (const auto & suffix : suffixes)
@@ -878,10 +891,18 @@ static NameToNameVector collectFilesForRenames(
                 if (source_part->checksums.has(filename))
                     add_rename(filename, "");
             }
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
             for (const auto & tantivy_suffix : tantivy_suffixes)
             {
                 const String filename = INDEX_FILE_PREFIX + command.column_name + tantivy_suffix;
+                if (source_part->checksums.has(filename))
+                    add_rename(filename, "");
+            }
+#endif
+#if USE_SPARSE_INDEX
+            for (const auto & sparse_suffix : sparse_suffixes)
+            {
+                const String filename = INDEX_FILE_PREFIX + command.column_name + sparse_suffix;
                 if (source_part->checksums.has(filename))
                     add_rename(filename, "");
             }
@@ -1094,12 +1115,26 @@ void finalizeMutatedPart(
     /// TODO: Should new part inherit build error from old part?
     /// Retry build vector index for new parts.
 
-#if USE_TANTIVY_SEARCH
-    auto metadata = source_part->storage.getInMemoryMetadataPtr();
-    if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
     {
-        TantivyIndexStoreFactory::instance().mutate(
-            source_part->getDataPartStoragePtr()->getRelativePath(), new_data_part->getDataPartStoragePtr()->getRelativePath());
+        auto metadata = source_part->storage.getInMemoryMetadataPtr();
+        if (metadata->hasSecondaryIndices())
+        {
+#if USE_FTS_INDEX
+            if (metadata->getSecondaryIndices().hasFTS())
+            {
+                TantivyIndexFactory::instance().mutate(
+                    source_part->getDataPartStoragePtr()->getRelativePath(), new_data_part->getDataPartStoragePtr()->getRelativePath());
+            }
+#endif
+#if USE_SPARSE_INDEX
+            if (metadata->getSecondaryIndices().hasSparse())
+            {
+                SparseIndexFactory::instance().mutate(
+                    source_part->getDataPartStoragePtr()->getRelativePath(), new_data_part->getDataPartStoragePtr()->getRelativePath());
+            }
+#endif
+        }
     }
 #endif
 }
@@ -2433,7 +2468,7 @@ bool MutateTask::prepare()
     }
     ctx->move_index_read_lock = ctx->source_part->segments_mgr->tryLockSegmentsTimed(RWLockImpl::Type::Read, std::chrono::milliseconds(1000));
     ctx->rebuild_vector_index_column = MutationHelpers::getVectorIndicesToRebuild(*ctx->commands);
-    ctx->hardlink_vector_index_files = VectorIndex::getAllValidVectorIndexFileNames(*ctx->source_part);
+    ctx->hardlink_vector_index_files = AIDB::getAllValidVectorIndexFileNames(*ctx->source_part);
     /// Avoid to call isStorageTouchedByMutations() for optimized lightweight delete, instead get the deleted row ids.
     bool is_storage_touched_by_mutations = true;
     if (ctx->source_part->isStoredOnDisk())
@@ -2487,13 +2522,41 @@ bool MutateTask::prepare()
             part->segments_mgr->mutateFrom(*ctx->source_part->segments_mgr, ctx->rebuild_vector_index_column);
 
             part->getDataPartStorage().beginTransaction();
-#if USE_TANTIVY_SEARCH
-        auto metadata = ctx->source_part->storage.getInMemoryMetadataPtr();
-        if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
-        {
-            TantivyIndexStoreFactory::instance().mutate(
-                ctx->source_part->getDataPartStoragePtr()->getRelativePath(), part->getDataPartStoragePtr()->getRelativePath());
-        }
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+            {
+                bool is_fts_index_rebuild = false;
+                bool is_sparse_index_rebuild = false;
+                for (const auto & index : ctx->indices_to_recalc)
+                {
+#if USE_FTS_INDEX
+                    if (index->index.type == TANTIVY_INDEX_NAME)
+                        is_fts_index_rebuild = true;
+#endif
+#if USE_SPARSE_INDEX
+                    if (index->index.type == SPARSE_INDEX_NAME)
+                        is_sparse_index_rebuild = true;
+#endif
+                }
+
+                auto metadata = ctx->source_part->storage.getInMemoryMetadataPtr();
+                if (metadata->hasSecondaryIndices())
+                {
+#if USE_FTS_INDEX
+                    if (metadata->getSecondaryIndices().hasFTS() && !is_fts_index_rebuild)
+                    {
+                        TantivyIndexFactory::instance().mutate(
+                            ctx->source_part->getDataPartStoragePtr()->getRelativePath(), part->getDataPartStoragePtr()->getRelativePath());
+                    }
+#endif
+#if USE_SPARSE_INDEX
+                    if (metadata->getSecondaryIndices().hasSparse() && !is_sparse_index_rebuild)
+                    {
+                        SparseIndexFactory::instance().mutate(
+                            ctx->source_part->getDataPartStoragePtr()->getRelativePath(), part->getDataPartStoragePtr()->getRelativePath());
+                    }
+#endif
+                }
+            }
 #endif
             ctx->temporary_directory_lock = std::move(lock);
         }
@@ -2521,8 +2584,8 @@ bool MutateTask::prepare()
         ctx->source_part, ctx->metadata_snapshot,
         ctx->commands_for_part, ctx->for_interpreter, ctx->for_file_renames, ctx->log);
 
-#if USE_TANTIVY_SEARCH
-    MutationHelpers::removeTantivyIndexCache(ctx->source_part, ctx->for_file_renames);
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+    MutationHelpers::removeCustomSkipIndexCache(ctx->source_part, ctx->for_file_renames);
 #endif
 
     ctx->stage_progress = std::make_unique<MergeStageProgress>(1.0);

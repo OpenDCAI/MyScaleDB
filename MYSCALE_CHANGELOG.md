@@ -1,5 +1,38 @@
 # MyScale Release Notes
 ## 2025
+
+### [v2.1.0](http://gitlab.originhub.tech/database/clickhouse/-/tags/myscale-v2.1.0) - 2025-07-02
+
+Features & Improvements
+
+- Optimize Table Join By swap table
+ [!3](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/3) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- improve benchmark client
+ [!4](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/4) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Support multiple vector indices on a single column
+ [!6](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/6) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+- Support multi-mode generate bitmap set
+ [!7](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/7) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Support Sparse Vector Search
+ [!8](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/8) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+
+Fixs
+
+- Fix stateful test fail due to network error
+ [!9](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/9) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fix index build error due to use default server config
+ [!10](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/10) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fix local integration tests
+ [!12](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/12) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fatal error in full_text_search table function
+ [!13](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/13) ([Jianmei Zhang](http://gitlab.originhub.tech/jianmeiz)).
+- Fix join undefined behavior test error
+ [!16](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/16) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fix init part fatal when checksum error
+ [!18](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/18) ([Pang shanfeng](http://gitlab.originhub.tech/shanfengp)).
+- Fix the sparse index reader release
+ [!21](http://gitlab.originhub.tech/database/clickhouse/-/merge_requests/21) ([Libao Yang](http://gitlab.originhub.tech/LibaoYang)).
+
 ### [v2.0.0] - 2025-04-02
 
 - Upgrade ClickHouse to v24.8.8.1-lts

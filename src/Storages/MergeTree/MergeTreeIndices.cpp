@@ -154,9 +154,14 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerValidator("full_text", fullTextIndexValidator);
     /// ------
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     registerCreator("fts", ftsIndexCreator);
     registerValidator("fts", ftsIndexValidator);
+#endif
+
+#if USE_SPARSE_INDEX
+    registerCreator("sparse", sparseIndexCreator);
+    registerValidator("sparse", sparseIndexValidator);
 #endif
 }
 

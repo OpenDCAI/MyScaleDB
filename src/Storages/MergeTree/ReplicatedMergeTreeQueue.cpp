@@ -17,8 +17,8 @@
 #include <ranges>
 #include <Poco/Timestamp.h>
 
-#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
-#include <VectorIndex/Common/SegmentsMgr.h>
+#include <AIDB/Common/StorageVectorIndicesMgr.h>
+#include <AIDB/Common/SegmentsMgr.h>
 
 
 namespace DB
@@ -1725,7 +1725,7 @@ bool ReplicatedMergeTreeQueue::shouldExecuteLogEntry(
         }
 
         /// If part already have this vector index, let it execute and record status in zookeeper.
-        if (source_part->segments_mgr->getSegmentStatus(entry.index_name) == VectorIndex::SegmentStatus::BUILT)
+        if (source_part->segments_mgr->getSegmentStatus(entry.index_name) == AIDB::SegmentStatus::BUILT)
         {
             LOG_DEBUG(log, "Part {}'s active covered part {} already has vector index {}, will execute to remove the log entry",
                         part_name, source_part->name, entry.index_name);

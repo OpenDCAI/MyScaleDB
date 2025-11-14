@@ -76,7 +76,7 @@
 #include <Processors/Executors/CompletedPipelineExecutor.h>
 #include <Processors/Sources/WaitForAsyncInsertSource.h>
 
-#include <VectorIndex/Interpreters/VIEventLog.h>
+#include <AIDB/Interpreters/VIEventLog.h>
 
 #include <base/EnumReflection.h>
 #include <base/demangle.h>

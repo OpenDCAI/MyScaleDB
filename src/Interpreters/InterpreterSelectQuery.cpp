@@ -99,12 +99,12 @@
 #include <Common/typeid_cast.h>
 #include <Interpreters/Context.h>
 
-#include <VectorIndex/Interpreters/GetHybridSearchVisitor.h>
-#include <VectorIndex/Processors/FusionSortingStep.h>
-#include <VectorIndex/Utils/HybridSearchUtils.h>
+#include <AIDB/Interpreters/GetHybridSearchVisitor.h>
+#include <AIDB/Processors/FusionSortingStep.h>
+#include <AIDB/Utils/HybridSearchUtils.h>
 
-#if USE_TANTIVY_SEARCH
-#    include <VectorIndex/Utils/CommonUtils.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Utils/CommonUtils.h>
 #endif
 
 namespace ProfileEvents
@@ -724,8 +724,8 @@ InterpreterSelectQuery::InterpreterSelectQuery(
 
         if (query.prewhere() && query.where())
         {
-            GetHybridSearchMatcher::Visitor::Data where_data;
-            GetHybridSearchMatcher::Visitor(where_data).visit(query.where());
+            GetHybridSearchVisitor::Data where_data;
+            GetHybridSearchVisitor(where_data).visit(query.where());
             bool hybrid_search_func_in_where = where_data.vector_scan_funcs.size() > 0 || where_data.text_search_func.size() > 0
                 || where_data.hybrid_search_func.size() > 0;
 
@@ -754,13 +754,17 @@ InterpreterSelectQuery::InterpreterSelectQuery(
                             vector_scan_func->is_from_multiple_distances = true;
                     }
                 }
+                else if (data.hybrid_search_func.size() == 1)
+                {
+                    hybrid_search_funcs = data.hybrid_search_func;
+                }
                 else if (data.text_search_func.size() == 1)
                 {
                     hybrid_search_funcs = data.text_search_func;
                 }
-                else if (data.hybrid_search_func.size() == 1)
+                else if (data.sparse_search_func.size() == 1)
                 {
-                    hybrid_search_funcs = data.hybrid_search_func;
+                    hybrid_search_funcs = data.sparse_search_func;
                 }
             }
         }
@@ -881,7 +885,7 @@ InterpreterSelectQuery::InterpreterSelectQuery(
     analyze(shouldMoveToPrewhere() && (!settings.query_plan_optimize_prewhere || !settings.query_plan_enable_optimizations));
 
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     if (!options.only_analyze && storage && context->getSettingsRef().dfs_query_then_fetch)
     {
         /// Collect global statistics information of all shards used in BM25 calculation when text/hybrid search is distributed
@@ -1880,8 +1884,11 @@ void InterpreterSelectQuery::executeImpl(QueryPlan & query_plan, std::optional<P
                         joined_plan->getCurrentDataStream(),
                         expressions.join,
                         settings.max_block_size,
+                        0,
                         max_streams,
-                        analysis_result.optimize_read_in_order);
+                        /* required_output_ = */ NameSet{},
+                        analysis_result.optimize_read_in_order,
+                        /* use_new_analyzer_ = */ false);
 
                     join_step->setStepDescription(fmt::format("JOIN {}", expressions.join->pipelineType()));
                     std::vector<QueryPlanPtr> plans;
@@ -2673,6 +2680,11 @@ void InterpreterSelectQuery::executeFetchColumns(QueryProcessingStage::Enum proc
         if (analysis_result.need_hybrid_search)
         {
             query_info.hybrid_search_info = query_analyzer->hybridSearchInfoPtr();
+            query_info.has_hybrid_search = true;
+        }
+        if (analysis_result.need_sparse_search)
+        {
+            query_info.sparse_search_info = query_analyzer->sparseSearchInfoPtr();
             query_info.has_hybrid_search = true;
         }
 

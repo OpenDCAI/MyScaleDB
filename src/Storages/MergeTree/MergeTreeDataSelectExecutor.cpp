@@ -37,8 +37,8 @@
 #include <Processors/Sources/SourceFromSingleChunk.h>
 #include <Processors/Transforms/AggregatingTransform.h>
 
-#if USE_TANTIVY_SEARCH
-#    include <Storages/MergeTree/MergeTreeIndexTantivy.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
 #endif
 
 #include <Core/UUID.h>
@@ -54,7 +54,7 @@
 
 #include <IO/WriteBufferFromOStream.h>
 
-#include <VectorIndex/Processors/ReadWithHybridSearch.h>
+#include <AIDB/Processors/ReadWithHybridSearch.h>
 
 namespace CurrentMetrics
 {
@@ -1365,7 +1365,7 @@ MarkRanges MergeTreeDataSelectExecutor::markRangesFromPKRange(
     return res;
 }
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 MarkRanges MergeTreeDataSelectExecutor::generateMarkRangesFromTantivy(
     MergeTreeIndexPtr index_helper,
     MergeTreeIndexConditionPtr condition,
@@ -1407,7 +1407,7 @@ MarkRanges MergeTreeDataSelectExecutor::generateMarkRangesFromTantivy(
     TantivyIndexStorePtr tantivy_store = nullptr;
     if (dynamic_cast<const MergeTreeIndexTantivy *>(&*index_helper) != nullptr)
     {
-        tantivy_store = TantivyIndexStoreFactory::instance().getOrLoadForSearch(index_helper->getFileName(), part->getDataPartStoragePtr());
+        tantivy_store = TantivyIndexFactory::instance().getOrLoadForSearch(index_helper->getFileName(), part->getDataPartStoragePtr());
         indexed_doc_nums = tantivy_store->getIndexedDocsNum();
         if (indexed_doc_nums > std::numeric_limits<uint32_t>::max())
         {
@@ -1583,7 +1583,7 @@ MarkRanges MergeTreeDataSelectExecutor::filterMarksUsingIndex(
 
     DB::OpenTelemetry::SpanHolder span("MergeTreeDataSelectExecutor::skip_granule");
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     if (dynamic_cast<const MergeTreeIndexTantivy *>(&*index_helper) != nullptr)
     {
         return generateMarkRangesFromTantivy(

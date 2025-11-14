@@ -5,6 +5,7 @@ members = [
     "skim",
     "prql",
     "supercreate",
+    "sparse_index",
 ]
 resolver = "2"
 

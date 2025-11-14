@@ -56,7 +56,7 @@
 #include <boost/program_options/options_description.hpp>
 #include <base/argsToConfig.h>
 #include <filesystem>
-#include <VectorIndex/Common/VIBuildMemoryUsageHelper.h>
+#include <AIDB/Common/VIBuildMemoryUsageHelper.h>
 
 #include "config.h"
 
@@ -519,7 +519,7 @@ try
     initTTYBuffer(toProgressOption(getClientConfiguration().getString("progress", "default")));
     ASTAlterCommand::setFormatAlterCommandsWithParentheses(true);
 
-    VectorIndex::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(0);
+    AIDB::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(0);
 
     /// try to load user defined executable functions, throw on error and die
     try

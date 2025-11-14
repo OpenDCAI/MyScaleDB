@@ -10,3 +10,4 @@ crate-type = ["staticlib"]
 [dependencies]
 tantivy_search = { path = "../tantivy_search" }
 _ch_rust_skim_rust = {path = "../skim"}
+sparse_index = { path= "../sparse_index" }

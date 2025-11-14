@@ -103,7 +103,7 @@
 #include <filesystem>
 #include <cassert>
 
-#include <VectorIndex/Utils/HybridSearchUtils.h>
+#include <AIDB/Utils/HybridSearchUtils.h>
 
 
 namespace fs = std::filesystem;

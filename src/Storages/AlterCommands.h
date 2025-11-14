@@ -8,7 +8,7 @@
 #include <Storages/ColumnsDescription.h>
 #include <Common/SettingsChanges.h>
 
-#include <VectorIndex/Common/VICommands.h>
+#include <AIDB/Common/VICommands.h>
 
 namespace DB
 {
@@ -258,9 +258,14 @@ public:
     static bool hasFullTextIndex(const StorageInMemoryMetadata & metadata);
     static bool hasLegacyInvertedIndex(const StorageInMemoryMetadata & metadata);
 
+#if USE_FTS_INDEX
     /// Check if commands have any tantivy index
-#if USE_TANTIVY_SEARCH
     static bool hasTantivyIndex(const StorageInMemoryMetadata & metadata);
+#endif
+
+#if USE_SPARSE_INDEX
+    /// Check if commands have any sparse index
+    static bool hasSparseIndex(const StorageInMemoryMetadata & metadata);
 #endif
 
     VICommands getVICommands(StorageInMemoryMetadata metadata, ContextPtr context) const;

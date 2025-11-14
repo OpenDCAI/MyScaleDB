@@ -38,10 +38,10 @@
 #include <Common/MemoryTracker.h>
 #include <Common/ProfileEventsScope.h>
 #include <Common/escapeForFileName.h>
-#include <VectorIndex/Common/VICommon.h>
-#include <VectorIndex/Storages/VITask.h>
-#include <VectorIndex/Utils/VIUtils.h>
-#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
+#include <AIDB/Common/VICommon.h>
+#include <AIDB/Storages/VITask.h>
+#include <AIDB/Utils/VIUtils.h>
+#include <AIDB/Common/StorageVectorIndicesMgr.h>
 
 namespace DB
 {
@@ -141,8 +141,12 @@ void StorageMergeTree::startup()
 
     vi_manager->startup();
 
-#if USE_TANTIVY_SEARCH
-    updateTantivyIndexCache();
+#if USE_FTS_INDEX
+    startupCustomSkipIndexCache(CustomIndexType::TantivyIndex);
+#endif
+
+#if USE_SPARSE_INDEX
+    startupCustomSkipIndexCache(CustomIndexType::SparseIndex);
 #endif
 
     /// NOTE background task will also do the above cleanups periodically.
@@ -2013,12 +2017,26 @@ void StorageMergeTree::dropPart(const String & part_name, bool detach, ContextPt
                 LOG_INFO(log, "{} {} part by replacing it with new empty {} part. With txn {}",
                          op, part->name, future_parts[0].part_name,
                          transaction.getTID());
-#if USE_TANTIVY_SEARCH
-                auto metadata = part->storage.getInMemoryMetadataPtr();
-                if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
                 {
-                    auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
-                    TantivyIndexStoreFactory::instance().remove(part->getDataPartStoragePtr()->getRelativePath(), index_names);
+                    auto metadata = part->storage.getInMemoryMetadataPtr();
+                    if (metadata->hasSecondaryIndices())
+                    {
+#if USE_FTS_INDEX
+                        if (metadata->getSecondaryIndices().hasFTS())
+                        {
+                            auto all_fts_index_names = metadata->getSecondaryIndices().getAllFTSNames();
+                            TantivyIndexFactory::instance().remove(part->getDataPartStoragePtr()->getRelativePath(), all_fts_index_names);
+                        }
+#endif
+#if USE_SPARSE_INDEX
+                        if (metadata->getSecondaryIndices().hasSparse())
+                        {
+                            auto all_sparse_index_names = metadata->getSecondaryIndices().getAllSparseNames();
+                            SparseIndexFactory::instance().remove(part->getDataPartStoragePtr()->getRelativePath(), all_sparse_index_names);
+                        }
+#endif
+                    }
                 }
 #endif
             }

@@ -71,7 +71,7 @@ add_subdirectory (Bridge)
 add_subdirectory (Daemon)
 add_subdirectory (Loggers)
 add_subdirectory (Formats)
-add_subdirectory (VectorIndex)
+add_subdirectory (AIDB)
 
 add_headers_and_sources(clickhouse_common_io Common)
 add_headers_and_sources(clickhouse_common_io Common/HashTable)
@@ -222,13 +222,6 @@ add_object_library(clickhouse_analyzer_passes Analyzer/Resolve)
 add_object_library(clickhouse_planner Planner)
 add_object_library(clickhouse_interpreters Interpreters)
 
-if (NOT ENABLE_RUST)
-    remove_specific_files(clickhouse_interpreters 
-        "Interpreters/TantivyFilter.h"
-        "Interpreters/TantivyFilter.cpp"
-    )
-endif()
-
 add_object_library(clickhouse_interpreters_cache Interpreters/Cache)
 add_object_library(clickhouse_interpreters_hash_join Interpreters/HashJoin)
 add_object_library(clickhouse_interpreters_access Interpreters/Access)
@@ -241,18 +234,6 @@ add_object_library(clickhouse_storages_mysql Storages/MySQL)
 add_object_library(clickhouse_storages_distributed Storages/Distributed)
 add_object_library(clickhouse_storages_mergetree Storages/MergeTree)
 add_object_library(clickhouse_storages_statistics Storages/Statistics)
-
-if (NOT ENABLE_RUST)
-    remove_specific_files(clickhouse_storages_mergetree 
-        "Storages/MergeTree/TantivyIndexStore.h"
-        "Storages/MergeTree/TantivyIndexStore.cpp"
-        "Storages/MergeTree/TantivyIndexStoreFactory.h"
-        "Storages/MergeTree/TantivyIndexStoreFactory.cpp"
-        "Storages/MergeTree/MergeTreeIndexTantivy.h"
-        "Storages/MergeTree/MergeTreeIndexTantivy.cpp"
-    )
-endif()
-
 add_object_library(clickhouse_storages_liveview Storages/LiveView)
 add_object_library(clickhouse_storages_windowview Storages/WindowView)
 add_object_library(clickhouse_storages_s3queue Storages/ObjectStorageQueue)

@@ -10,7 +10,7 @@
 #include <Parsers/ASTInterpolateElement.h>
 #include <Parsers/ASTLiteral.h>
 
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 
 #include <Common/logger_useful.h>
 

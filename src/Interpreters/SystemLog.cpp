@@ -50,7 +50,7 @@
 
 #include <fmt/core.h>
 
-#include <VectorIndex/Interpreters/VIEventLog.h>
+#include <AIDB/Interpreters/VIEventLog.h>
 
 
 namespace DB

@@ -63,7 +63,7 @@ void registerTableFunctions()
     registerTableFunctionObjectStorageCluster(factory);
     registerDataLakeTableFunctions(factory);
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
     registerTableFunctionFtsIndex(factory);
 #endif
 

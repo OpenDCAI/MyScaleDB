@@ -14,7 +14,7 @@
 #include <Storages/AlterCommands.h>
 #include <Storages/StorageDistributed.h>
 
-#include <VectorIndex/Parsers/ASTVIDeclaration.h>
+#include <AIDB/Parsers/ASTVIDeclaration.h>
 
 namespace DB
 {

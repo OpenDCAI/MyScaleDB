@@ -13,8 +13,8 @@
 #include <Storages/TTLDescription.h>
 #include <Storages/MaterializedView/RefreshSchedule.h>
 
-#include <VectorIndex/Storages/VIDescriptions.h>
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Storages/VIDescriptions.h>
+#include <AIDB/Utils/CommonUtils.h>
 #include <Common/MultiVersion.h>
 
 namespace DB

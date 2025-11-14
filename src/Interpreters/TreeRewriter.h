@@ -7,7 +7,7 @@
 #include <Interpreters/DatabaseAndTableWithAlias.h>
 #include <Interpreters/SelectQueryOptions.h>
 #include <Storages/IStorage_fwd.h>
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 
 namespace DB
 {
@@ -104,7 +104,7 @@ struct TreeRewriterResult
     const Names & requiredSourceColumnsForAccessCheck() const { return required_source_columns_before_expanding_alias_columns; }
     NameSet getArrayJoinSourceNameSet() const;
 
-    /// Special handings for vector scan / text / hybrid search funcs: get limit_length, cases when search func in right joined table
+    /// Special handlings for vector scan / text / hybrid / sparse search funcs: get limit_length, cases when search func in right joined table
     void collectForHybridSearchRelatedFunctions(
         ASTSelectQuery * select_query,
         const std::vector<TableWithColumnNamesAndTypes> & tables_with_columns,

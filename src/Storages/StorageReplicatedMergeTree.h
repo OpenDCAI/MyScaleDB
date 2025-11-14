@@ -39,7 +39,7 @@
 #include <QueryPipeline/Pipe.h>
 #include <Storages/MergeTree/BackgroundJobsAssignee.h>
 #include <Parsers/SyncReplicaMode.h>
-#include <VectorIndex/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
+#include <AIDB/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
 
 
 namespace DB

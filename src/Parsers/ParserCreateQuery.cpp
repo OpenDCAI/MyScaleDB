@@ -34,7 +34,7 @@
 #include <Common/typeid_cast.h>
 #include <Parsers/ASTColumnDeclaration.h>
 
-#include <VectorIndex/Parsers/ASTVIDeclaration.h>
+#include <AIDB/Parsers/ASTVIDeclaration.h>
 
 
 namespace DB

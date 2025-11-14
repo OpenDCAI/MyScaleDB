@@ -8,7 +8,7 @@
 #include <Common/typeid_cast.h>
 #include <Storages/MergeTree/MergeTreeVirtualColumns.h>
 #include <Storages/MergeTree/MergeTreeSelectProcessor.h>
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 #include <Columns/ColumnConst.h>
 #include <IO/WriteBufferFromString.h>
 #include <IO/Operators.h>

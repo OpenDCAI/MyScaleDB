@@ -10,6 +10,7 @@
 #include <Common/formatReadable.h>
 #include <Common/logger_useful.h>
 #include <Common/thread_local_rng.h>
+#include <Common/MemoryTracker.h>
 #include <Core/Settings.h>
 
 #include <numeric>
@@ -107,6 +108,14 @@ namespace
     }
 }
 
+Int64 getCurrentQueryMemoryUsage()
+{
+    /// Use query-level memory tracker
+    if (auto * memory_tracker_child = CurrentThread::getMemoryTracker())
+        if (auto * memory_tracker = memory_tracker_child->getParent())
+            return memory_tracker->get();
+    return 0;
+}
 class GraceHashJoin::FileBucket : boost::noncopyable
 {
     enum class State : uint8_t
@@ -321,6 +330,17 @@ bool GraceHashJoin::hasMemoryOverflow(size_t total_rows, size_t total_bytes) con
     /// One row can't be split, avoid loop
     if (total_rows < 2)
         return false;
+    
+    if (auto * memory_tracker_child = CurrentThread::getMemoryTracker())
+        if (auto * memory_tracker = memory_tracker_child->getParent())
+            if (memory_tracker->checkMemoryLimitRatio(total_bytes, 1.0, true, true))
+            {
+                LOG_TRACE(log, "Memory overflow, size exceeded {} / {} bytes, {} / {} rows",
+                    ReadableSize(total_bytes), ReadableSize(table_join->sizeLimits().max_bytes),
+                    total_rows, table_join->sizeLimits().max_rows);
+                return true;
+            }
+
     bool has_overflow = !table_join->sizeLimits().softCheck(total_rows, total_bytes);
 
     if (has_overflow)

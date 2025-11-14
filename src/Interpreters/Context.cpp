@@ -119,7 +119,7 @@
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <base/defines.h>
-#include <VectorIndex/Interpreters/VIEventLog.h>
+#include <AIDB/Interpreters/VIEventLog.h>
 
 
 namespace fs = std::filesystem;
@@ -255,7 +255,8 @@ struct ContextSharedPart : boost::noncopyable
     ConfigurationPtr config TSA_GUARDED_BY(mutex);           /// Global configuration settings.
     String tmp_path TSA_GUARDED_BY(mutex);                   /// Path to the temporary files that occur when processing the request.
     String vector_index_cache_path;                          /// Path to the directory of vector index cache for MyScale vector index disk mode.
-    String tantivy_index_cache_path;                        /// Path to the directory of tantivy index cache.
+    String tantivy_index_store_path;                         /// Path to the directory of tantivy index store.
+    String sparse_index_store_path;                          /// Path to the directory of sparse index store.
 
     /// All temporary files that occur when processing the requests accounted here.
     /// Child scopes for more fine-grained accounting are created per user/query/etc.
@@ -1038,10 +1039,16 @@ String Context::getVectorIndexCachePath() const
     return shared->vector_index_cache_path;
 }
 
-String Context::getTantivyIndexCachePath() const
+String Context::getTantivyIndexStorePath() const
 {
     SharedLockGuard lock(shared->mutex);
-    return shared->tantivy_index_cache_path;
+    return shared->tantivy_index_store_path;
+}
+
+String Context::getSparseIndexStorePath() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->sparse_index_store_path;
 }
 
 Strings Context::getWarnings() const
@@ -1147,8 +1154,11 @@ void Context::setPath(const String & path)
     if (shared->vector_index_cache_path.empty())
         shared->vector_index_cache_path = shared->path + "vector_index_cache/";
 
-    if (shared->tantivy_index_cache_path.empty())
-        shared->tantivy_index_cache_path = shared->path + "tantivy_index_cache/";
+    if (shared->tantivy_index_store_path.empty())
+        shared->tantivy_index_store_path = shared->path + "tantivy_index_store/";
+
+    if (shared->sparse_index_store_path.empty())
+        shared->sparse_index_store_path = shared->path + "sparse_index_store/";
 }
 
 void Context::setFilesystemCachesPath(const String & path)
@@ -1329,10 +1339,16 @@ void Context::setVectorIndexCachePath(const String & path)
     shared->vector_index_cache_path = path;
 }
 
-void Context::setTantivyIndexCachePath(const String & path)
+void Context::setTantivyIndexStorePath(const String & path)
 {
     std::lock_guard lock(shared->mutex);
-    shared->tantivy_index_cache_path = path;
+    shared->tantivy_index_store_path = path;
+}
+
+void Context::setSparseIndexStorePath(const String & path)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->sparse_index_store_path = path;
 }
 
 void Context::addWarningMessage(const String & msg) const
@@ -5729,6 +5745,21 @@ void Context::setHybridSearchInfo(HybridSearchInfoPtr hybrid_search_info) const
 void Context::resetHybridSearchInfo() const
 {
     right_hybrid_search_info = nullptr;
+}
+
+SparseSearchInfoPtr Context::getSparseSearchInfo() const
+{
+    return right_sparse_search_info;
+}
+
+void Context::setSparseSearchInfo(SparseSearchInfoPtr sparse_search_info) const
+{
+    right_sparse_search_info = sparse_search_info;
+}
+
+void Context::resetSparseSearchInfo() const
+{
+    right_sparse_search_info = nullptr;
 }
 
 WriteSettings Context::getWriteSettings() const

@@ -378,3 +378,6 @@
 [submodule "rust/workspace/tantivy_search"]
 	path = rust/workspace/tantivy_search
 	url = https://github.com/OriginHubAI/tantivy-search.git
+[submodule "rust/workspace/sparse_index"]
+	path = rust/workspace/sparse_index
+	url = https://github.com/OriginHubAI/sparse-index.git

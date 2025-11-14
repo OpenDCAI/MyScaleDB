@@ -17,7 +17,7 @@
 #include <IO/ReadHelpers.h>
 #include <IO/Operators.h>
 
-#include <VectorIndex/Utils/CommonUtils.h>
+#include <AIDB/Utils/CommonUtils.h>
 
 
 namespace DB

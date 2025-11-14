@@ -46,10 +46,15 @@ QueryPlanOptimizationSettings QueryPlanOptimizationSettings::fromSettings(const 
 
     settings.remove_redundant_distinct = from.query_plan_enable_optimizations && from.query_plan_remove_redundant_distinct;
 
+    settings.join_swap_table = from.enable_auto_select_join_table;
+
     settings.optimize_projection = from.optimize_use_projections;
     settings.force_use_projection = settings.optimize_projection && from.force_optimize_projection;
     settings.force_projection_name = settings.optimize_projection ? from.force_optimize_projection_name.value : "";
     settings.optimize_use_implicit_projections = settings.optimize_projection && from.optimize_use_implicit_projections;
+
+    /// This comes from EXPLAIN settings not query settings and outside of the scope of this class
+    settings.keep_logical_steps = false;
 
     return settings;
 }

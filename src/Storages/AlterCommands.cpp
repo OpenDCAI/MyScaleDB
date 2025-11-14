@@ -21,11 +21,6 @@
 #include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <Interpreters/InterpreterSelectQueryAnalyzer.h>
 #include <Interpreters/parseColumnsListForTableFunction.h>
-
-#if USE_TANTIVY_SEARCH
-#    include <Interpreters/TantivyFilter.h>
-#endif
-
 #include <Storages/StorageView.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTColumnDeclaration.h>
@@ -50,8 +45,8 @@
 
 #include <ranges>
 
-#include <VectorIndex/Parsers/ASTVIDeclaration.h>
-#include <VectorIndex/Common/VICommon.h>
+#include <AIDB/Parsers/ASTVIDeclaration.h>
+#include <AIDB/Common/VICommon.h>
 
 namespace DB
 {
@@ -67,6 +62,7 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
     extern const int SUPPORT_IS_DISABLED;
     extern const int ALTER_OF_COLUMN_IS_FORBIDDEN;
+    extern const int INVALID_VECTOR_INDEX;
 }
 
 namespace
@@ -1038,20 +1034,6 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot add vector index {}: this name is used", vec_index_name);
         }
 
-        if (std::any_of(
-                metadata.vec_indices.cbegin(),
-                metadata.vec_indices.cend(),
-                [this](const auto & vec_index)
-                {
-                    return vec_index.column == column_name;
-                }))
-        {
-            if (if_not_exists)
-                return;
-            else
-                throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add vector index {}: this column already has a vector index definition", vec_index_name);
-        }
-
         if (!metadata.columns.has(column_name))
             throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add vector index {}: column {} does not exist", vec_index_name, column_name);
 
@@ -1062,12 +1044,26 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
             throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add FloatVector index {}: column has no length constraint", vec_index_name);
         }
 
+        /// Support multiple vector indices with different types on a vector column
+        const auto & new_vec_index = VIDescription::getVectorIndexFromAST(
+            vec_index_decl, metadata.columns, metadata.constraints, getParameterCheckStatus(metadata, context));
+
+        for (const auto & vec_index : metadata.vec_indices)
+        {
+            /// Further check if new vector index has the same type as old defined index
+            if (vec_index.column == new_vec_index.column
+                && vec_index.type == new_vec_index.type)
+            {
+                if (if_not_exists)
+                    return;
+                else
+                    throw Exception(ErrorCodes::INVALID_VECTOR_INDEX, "Cannot add vector index {} with type {}: this column already has a vector index with the same type", vec_index_name, new_vec_index.type);
+            }
+        }
+
         auto insert_it = metadata.vec_indices.end();
 
-        metadata.vec_indices.emplace(
-            insert_it,
-            VIDescription::getVectorIndexFromAST(
-                vec_index_decl, metadata.columns, metadata.constraints, getParameterCheckStatus(metadata, context)));
+        metadata.vec_indices.emplace(insert_it, new_vec_index);
     }
     else if (type == DROP_VECTOR_INDEX)
     {
@@ -1349,15 +1345,17 @@ bool AlterCommands::hasLegacyInvertedIndex(const StorageInMemoryMetadata & metad
     return false;
 }
 
-#if USE_TANTIVY_SEARCH
+#if USE_FTS_INDEX
 bool AlterCommands::hasTantivyIndex(const StorageInMemoryMetadata & metadata)
 {
-    for (const auto & index : metadata.secondary_indices)
-    {
-        if (index.type == TANTIVY_INDEX_NAME)
-            return true;
-    }
-    return false;
+    return metadata.secondary_indices.hasFTS();
+}
+#endif
+
+#if USE_SPARSE_INDEX
+bool AlterCommands::hasSparseIndex(const StorageInMemoryMetadata & metadata)
+{
+    return metadata.secondary_indices.hasSparse();
 }
 #endif
 

@@ -18,10 +18,18 @@
 #include <Common/logger_useful.h>
 #include <Common/typeid_cast.h>
 
-#if USE_TANTIVY_SEARCH
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
 #    include <Disks/DiskLocal.h>
-#    include <Storages/MergeTree/TantivyIndexStore.h>
-#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#endif
+
+#if USE_FTS_INDEX
+#    include <AIDB/Store/TantivyIndexStore.h>
+#    include <AIDB/Factory/TantivyIndexFactory.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Store/SparseIndexStore.h>
+#    include <AIDB/Factory/SparseIndexFactory.h>
 #endif
 
 namespace DB
@@ -275,6 +283,99 @@ StoragePtr DatabaseWithOwnTablesBase::detachTable(ContextPtr /* context_ */, con
     return detachTableUnlocked(table_name);
 }
 
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+void removeCustomSkipIndexCacheInDisk(DiskPtr disk, fs::path dir)
+{
+    if (disk->isDirectory(dir))
+    {
+        disk->removeRecursive(dir);
+    }
+
+    auto dir_parent = dir.parent_path().parent_path();
+    if (disk->isDirectory(dir_parent) && disk->isDirectoryEmpty(dir_parent))
+    {
+        disk->removeRecursive(dir_parent);
+    }
+}
+
+void removeCustomSkipIndexCache(const StoragePtr & storage)
+{
+#if USE_FTS_INDEX
+    bool hasFTS = storage->getInMemoryMetadataPtr()->getSecondaryIndices().hasFTS();
+    if (!hasFTS)
+    {
+        return;
+    }
+#endif
+
+#if USE_SPARSE_INDEX
+    bool hasSparse = storage->getInMemoryMetadataPtr()->getSecondaryIndices().hasSparse();
+    if (!hasSparse)
+    {
+        return;
+    }
+#endif
+
+    fs::path table_relative_path;
+    if (storage->getStorageID().hasUUID())
+    {
+        String uuid = toString(storage->getStorageID().uuid);
+        table_relative_path = fs::path("store") / uuid.substr(0, 3) / uuid / "";
+    }
+    else if (storage->getStorageID().hasDatabase())
+    {
+        table_relative_path = fs::path("data") / storage->getStorageID().getDatabaseName() / storage->getStorageID().getTableName() / "";
+    }
+
+    if (!table_relative_path.empty())
+    {
+        auto context = Context::getGlobalContextInstance();
+
+#if USE_FTS_INDEX
+        if (hasFTS)
+        {
+            String tantivy_index_cache_prefix = context->getTantivyIndexStorePath();
+            fs::path tantivy_index_store_path_for_table = fs::path(tantivy_index_cache_prefix) / table_relative_path;
+            auto disk = std::make_shared<DiskLocal>(TANTIVY_TEMP_DISK_NAME, context->getPath());
+
+            removeCustomSkipIndexCacheInDisk(disk, tantivy_index_store_path_for_table);
+            LOG_INFO(getLogger("DatabaseWithOwnTablesBase"),
+                "detach table `{}`, hasDatabase {}, hasUUID {}, clean Fts index cache `{}`",
+                storage->getStorageID().getFullTableName(),
+                storage->getStorageID().hasDatabase(),
+                storage->getStorageID().hasUUID(),
+                tantivy_index_store_path_for_table);
+
+            // Clean up all tantivy indexes in all_skp_index_names
+            auto all_fts_index_names = storage->getInMemoryMetadataPtr()->getSecondaryIndices().getAllFTSNames();
+            TantivyIndexFactory::instance().remove(table_relative_path, all_fts_index_names);
+        }
+#endif
+
+#if USE_SPARSE_INDEX
+        if (hasSparse)
+        {
+            String sparse_index_cache_prefix = context->getSparseIndexStorePath();
+            fs::path sparse_index_store_path_for_table = fs::path(sparse_index_cache_prefix) / table_relative_path;
+            auto disk = std::make_shared<DiskLocal>(SPARSE_TEMP_DISK_NAME, context->getPath());
+
+            removeCustomSkipIndexCacheInDisk(disk, sparse_index_store_path_for_table);
+            LOG_INFO(getLogger("DatabaseWithOwnTablesBase"),
+                "detach table `{}`, hasDatabase {}, hasUUID {}, clean Sparse index cache `{}`",
+                storage->getStorageID().getFullTableName(),
+                storage->getStorageID().hasDatabase(),
+                storage->getStorageID().hasUUID(),
+                sparse_index_store_path_for_table);
+
+            // Clean up all sparse indexes in all_skp_index_names
+            auto all_sparse_index_names = storage->getInMemoryMetadataPtr()->getSecondaryIndices().getAllSparseNames();
+            SparseIndexFactory::instance().remove(table_relative_path, all_sparse_index_names);
+        }
+#endif
+    }
+}
+#endif
+
 StoragePtr DatabaseWithOwnTablesBase::detachTableUnlocked(const String & table_name)
 {
     auto it = tables.find(table_name);
@@ -309,48 +410,8 @@ StoragePtr DatabaseWithOwnTablesBase::detachTableUnlocked(const String & table_n
         DatabaseCatalog::instance().removeUUIDMapping(table_id.uuid);
     }
 
-#if USE_TANTIVY_SEARCH
-    if (table_storage->getInMemoryMetadataPtr()->getSecondaryIndices().hasFTS())
-    {
-        fs::path table_relative_path;
-        if (table_storage->getStorageID().hasUUID())
-        {
-            String uuid = toString(table_storage->getStorageID().uuid);
-            table_relative_path = fs::path("store") / uuid.substr(0, 3) / uuid / "";
-        }
-        else if (table_storage->getStorageID().hasDatabase())
-        {
-            table_relative_path = fs::path("data") / table_storage->getStorageID().getDatabaseName() / table_storage->getStorageID().getTableName() / "";
-        }
-
-        if (!table_relative_path.empty())
-        {
-            auto context = Context::getGlobalContextInstance();
-            String tantivy_index_cache_prefix = context->getTantivyIndexCachePath();
-            fs::path tantivy_index_cache_path_for_table = fs::path(tantivy_index_cache_prefix) / table_relative_path;
-            auto disk = std::make_shared<DiskLocal>(TANTIVY_TEMP_DISK_NAME, context->getPath());
-            if (disk->isDirectory(tantivy_index_cache_path_for_table))
-            {
-                disk->removeRecursive(tantivy_index_cache_path_for_table);
-                LOG_INFO(
-                    getLogger("DatabaseWithOwnTablesBase"),
-                    "detach table `{}`, hasDatabase {}, hasUUID {} clean FTS cache `{}`",
-                    table_storage->getStorageID().getFullTableName(),
-                    table_storage->getStorageID().hasDatabase(),
-                    table_storage->getStorageID().hasUUID(),
-                    tantivy_index_cache_path_for_table);
-            }
-            auto tantivy_index_cache_parent_path = tantivy_index_cache_path_for_table.parent_path().parent_path();
-            if (disk->isDirectory(tantivy_index_cache_parent_path) && disk->isDirectoryEmpty(tantivy_index_cache_parent_path))
-            {
-                disk->removeRecursive(tantivy_index_cache_parent_path);
-            }
-            // clean stores
-            // TODO needs refine TantivyIndexStoreFactory, the remove func is only for data part relative path.
-            auto index_names = table_storage->getInMemoryMetadataPtr()->getSecondaryIndices().getAllRegisteredNames();
-            TantivyIndexStoreFactory::instance().remove(table_relative_path, index_names);
-        }
-    }
+#if defined(USE_FTS_INDEX) || defined(USE_SPARSE_INDEX)
+    removeCustomSkipIndexCache(table_storage);
 #endif
     return table_storage;
 }

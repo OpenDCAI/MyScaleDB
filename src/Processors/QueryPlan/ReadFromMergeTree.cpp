@@ -54,8 +54,12 @@
 
 #include "config.h"
 
-#if USE_TANTIVY_SEARCH
-#include <Storages/MergeTree/MergeTreeIndexTantivy.h>
+#if USE_FTS_INDEX
+#    include <AIDB/Storages/MergeTreeIndexTantivy.h>
+#endif
+
+#if USE_SPARSE_INDEX
+#    include <AIDB/Storages/MergeTreeIndexSparse.h>
 #endif
 
 using namespace DB;
@@ -122,7 +126,7 @@ bool restorePrewhereInputs(PrewhereInfo & info, const NameSet & inputs)
 
 }
 
-#include <VectorIndex/Storages/MergeTreeVSManager.h>
+#include <AIDB/Storages/MergeTreeVSManager.h>
 
 namespace ProfileEvents
 {
@@ -1471,6 +1475,9 @@ static void buildIndexes(
     {
         if (!ignored_index_names.contains(index.name))
         {
+            if (index.type == SPARSE_INDEX_NAME)
+                continue;
+
             auto index_helper = MergeTreeIndexFactory::instance().get(index);
             if (index_helper->isMergeable())
             {
