@@ -101,7 +101,7 @@ namespace AIDB
             if (metric_type == VIMetric::Hamming)
             {
                 LOG_DEBUG(log, "Metric is Hamming");
-                faiss::hammings_knn_mc(x, y, nx, ny, k, d / 8, distance, result_id, nullptr);
+                faiss::hammings_knn_mc(x, y, nx, ny, k, d / 8, reinterpret_cast<int32_t*>(distance), result_id, nullptr);
             }
             else if (metric_type == VIMetric::Jaccard)
             {

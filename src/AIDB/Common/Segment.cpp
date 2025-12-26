@@ -68,16 +68,6 @@ BaseSegment::Metadata BaseSegment::generateVIMetadata(const IMergeTreeDataPart &
     }
     meta.index_metric = Search::getMetricType(index_metric_str, vec_desc.vector_search_type);
 
-    /// init disk mode, when not set, use default disk mode in merge tree settings
-    if (meta.index_type == VIType::SCANN || meta.index_type == VIType::MSRQ)
-    {
-        if (!meta.build_params.contains("disk_mode"))
-            meta.build_params.setParam("disk_mode", merge_tree_setting->default_scann_disk_mode);
-
-        if (!meta.build_params.contains("fp16_storage"))
-            meta.build_params.setParam("fp16_storage", merge_tree_setting->enable_scann_use_fp16_storage);
-    }
-
     /// set version
     meta.index_version = "1.0.0";
     return meta;
@@ -886,11 +876,6 @@ SegmentInfoPtrList SimpleSegment<data_type>::getSegmentInfoList() const
 template <Search::DataType data_type>
 bool SimpleSegment<data_type>::supportTwoStageSearch() const
 {
-    if constexpr (data_type == Search::DataType::FloatVector)
-    {
-        if (vi_metadata.index_type == VIType::SCANN || vi_metadata.index_type == VIType::MSRQ)
-            return true;
-    }
     return false;
 }
 
