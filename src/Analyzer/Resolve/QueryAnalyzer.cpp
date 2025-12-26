@@ -68,6 +68,8 @@
 
 #include <Core/Settings.h>
 
+#include <AIDB/Analyzer/SpecialSearchFunction.h>
+
 namespace ProfileEvents
 {
     extern const Event ScalarSubqueriesGlobalCacheHit;
@@ -537,6 +539,7 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
             PullingAsyncPipelineExecutor executor(io.pipeline);
             io.pipeline.setProgressCallback(context->getProgressCallback());
             io.pipeline.setProcessListElement(context->getProcessListElement());
+            io.pipeline.setConcurrencyControl(context->getSettingsRef().use_concurrency_control);
 
             Block block;
 
@@ -3143,6 +3146,39 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
 
             return result_projection_names;
         }
+        else if (isSpecialSearchFunctionName(function_name))
+        {
+            if (isVectorScanFunc(function_name))
+            {
+                if (function_arguments_size != 2)
+                    throw Exception(ErrorCodes::UNSUPPORTED_METHOD,
+                        "Function '{}' must have 2 arguments. In scope {}", function_name, scope.scope_node->formatASTForErrorMessage());
+            }
+            else if (isTextSearch(function_name))
+            {
+                if (function_arguments_size != 2)
+                    throw Exception(ErrorCodes::UNSUPPORTED_METHOD,
+                        "Function '{}' must have 2 arguments. In scope {}", function_name, scope.scope_node->formatASTForErrorMessage());
+            }
+            else if (isHybridSearch(function_name))
+            {
+                if (function_arguments_size != 4)
+                    throw Exception(ErrorCodes::UNSUPPORTED_METHOD,
+                        "Function '{}' must have 4 arguments. In scope {}", function_name,  scope.scope_node->formatASTForErrorMessage());
+            }
+            else if (isSparseSearch(function_name))
+            {
+                if (function_arguments_size != 2)
+                    throw Exception(ErrorCodes::UNSUPPORTED_METHOD,
+                        "Function '{}' must have 2 arguments. In scope {}", function_name, scope.scope_node->formatASTForErrorMessage());
+            }
+
+            auto search_function = std::make_shared<SpecialSearchFunction>(function_name, argument_types, parameters);
+            function_node_ptr->resolveAsSpecialSearchFunction(search_function);
+
+            /// result project name is function(parameter)(arguments)
+            return result_projection_names;
+        }
     }
 
     if (function_node.isWindowFunction())
@@ -5603,6 +5639,13 @@ void QueryAnalyzer::resolveQuery(const QueryTreeNodePtr & query_node, Identifier
     validateFilters(query_node);
     validateAggregates(query_node, { .group_by_use_nulls = scope.group_by_use_nulls });
 
+    /// Validate hybrid search functions in query
+    bool need_resolve_order_by = false; /// Support multiple distance functions
+    validateHybridSearchFuncs(query_node, need_resolve_order_by, projection_columns);
+
+    if (need_resolve_order_by)
+        resolveSortNodeList(query_node_typed.getOrderByNode(), scope);
+
     for (const auto & column : projection_columns)
     {
         if (isNotCreatable(column.type))
@@ -5621,7 +5664,13 @@ void QueryAnalyzer::resolveQuery(const QueryTreeNodePtr & query_node, Identifier
     /// Remove aliases from expression and lambda nodes
 
     for (auto & [_, node] : *scope.aliases.alias_name_to_expression_node)
+    {
+        /// Don't remove alias name for special search functions
+        if (const auto * func_node = node->as<FunctionNode>(); func_node && func_node->isSpecialSearchFunction())
+            continue;
+
         node->removeAlias();
+    }
 
     for (auto & [_, node] : scope.aliases.alias_name_to_lambda_node)
         node->removeAlias();

@@ -81,6 +81,13 @@ private:
                     continue;
                 }
 
+                /// Special search functions are not ordinary functions, but are allowed in GROUP BY clause
+                if (function_node->isSpecialSearchFunction())
+                {
+                    new_group_by_keys.push_back(node_to_process);
+                    continue;
+                }
+
                 // Aggregate functions are not allowed in GROUP BY clause
                 auto function = function_node->getFunctionOrThrow();
                 bool can_be_eliminated = function->isInjective(function_node->getArgumentColumns());

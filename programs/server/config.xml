@@ -333,6 +333,7 @@
     -->
     <concurrent_threads_soft_limit_num>0</concurrent_threads_soft_limit_num>
     <concurrent_threads_soft_limit_ratio_to_cores>2</concurrent_threads_soft_limit_ratio_to_cores>
+    <concurrent_threads_scheduler>fair_round_robin</concurrent_threads_scheduler>
 
     <!-- Maximum number of concurrent queries. -->
     <max_concurrent_queries>1000</max_concurrent_queries>
@@ -1371,6 +1372,10 @@
      If not specified they will be stored locally. -->
     <!-- <user_defined_zookeeper_path>/clickhouse/user_defined</user_defined_zookeeper_path> -->
 
+    <!-- Path in ZooKeeper to store workload and resource created by the command CREATE WORKLOAD and CREATE REESOURCE.
+     If not specified they will be stored locally. -->
+    <!-- <workload_zookeeper_path>/clickhouse/workload/definitions.sql</workload_zookeeper_path> -->
+
     <!-- Uncomment if you want data to be compressed 30-100% better.
          Don't do that if you just started using ClickHouse.
       -->
@@ -1446,12 +1451,24 @@
         <!-- <host_name>replica</host_name> -->
     </distributed_ddl>
 
-    <!-- Used to regulate how resources are utilized and shared between merges, mutations and other workloads.
+    <!-- Workload scheduling: used to regulate how resources are utilized and shared between merges, mutations and other workloads.
          Specified value is used as `workload` setting value for background merge or mutation.
     -->
     <!--
     <merge_workload>merges_and_mutations</merge_workload>
     <mutation_workload>merges_and_mutations</mutation_workload>
+    -->
+
+    <!-- Workload scheduling: throw or provide unlimited access to resource given unknown `workload` query setting -->
+    <!-- <throw_on_unknown_workload>true</throw_on_unknown_workload> -->
+
+    <!-- Workload scheduling: if enabled during CPU overloaded periods, long-running queries will downscale to lower number of threads dynamically.
+         Ensures more fair CPU resource distribution.
+    -->
+    <!--
+    <cpu_slot_preemption>true</cpu_slot_preemption>
+    <cpu_slot_quantum_ns>10000000</cpu_slot_quantum_ns>
+    <cpu_slot_preemption_timeout_ms>1000</cpu_slot_preemption_timeout_ms>
     -->
 
     <!-- Settings to fine-tune MergeTree tables. See documentation in source code, in MergeTreeSettings.h -->

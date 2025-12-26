@@ -106,6 +106,34 @@ void FunctionNode::resolveAsWindowFunction(AggregateFunctionPtr window_function_
     kind = FunctionKind::WINDOW;
 }
 
+void FunctionNode::resolveAsSpecialSearchFunction(SpecialSearchFunctionPtr special_search_function_value)
+{
+    function_name = special_search_function_value->getName();
+    function = std::move(special_search_function_value);
+    kind = FunctionKind::SPECIAL_SEARCH;
+}
+
+void FunctionNode::updateFuncResultNameForMultipleDistances()
+{
+    if (!isSpecialSearchFunction() || !isDistance(function_name))
+        return;
+
+    auto special_search_func = getSpecialSearchFunction();
+    if (!special_search_func)
+        return;
+
+    String new_func_col_name = special_search_func->getResultColumnName() + "_";
+    if (hasAlias())
+        new_func_col_name += getAlias();
+    else
+    {
+        const auto hash = getTreeHash();
+        new_func_col_name += toString(hash);
+    }
+
+    special_search_func->setResultColumnName(new_func_col_name);
+}
+
 void FunctionNode::dumpTreeImpl(WriteBuffer & buffer, FormatState & format_state, size_t indent) const
 {
     buffer << std::string(indent, ' ') << "FUNCTION id: " << format_state.getNodeId(this);
@@ -120,6 +148,8 @@ void FunctionNode::dumpTreeImpl(WriteBuffer & buffer, FormatState & format_state
         function_type = "aggregate";
     else if (isWindowFunction())
         function_type = "window";
+    else if (isSpecialSearchFunction())
+        function_type = "special_search";
 
     buffer << ", function_type: " << function_type;
 

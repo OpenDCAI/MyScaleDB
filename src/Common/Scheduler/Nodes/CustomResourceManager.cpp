@@ -1,7 +1,6 @@
-#include <Common/Scheduler/Nodes/DynamicResourceManager.h>
+#include <Common/Scheduler/Nodes/CustomResourceManager.h>
 
 #include <Common/Scheduler/Nodes/SchedulerNodeFactory.h>
-#include <Common/Scheduler/ResourceManagerFactory.h>
 #include <Common/Scheduler/ISchedulerQueue.h>
 
 #include <Common/Exception.h>
@@ -21,7 +20,7 @@ namespace ErrorCodes
     extern const int INVALID_SCHEDULER_NODE;
 }
 
-DynamicResourceManager::State::State(EventQueue * event_queue, const Poco::Util::AbstractConfiguration & config)
+CustomResourceManager::State::State(EventQueue * event_queue, const Poco::Util::AbstractConfiguration & config)
     : classifiers(config)
 {
     Poco::Util::AbstractConfiguration::Keys keys;
@@ -35,7 +34,7 @@ DynamicResourceManager::State::State(EventQueue * event_queue, const Poco::Util:
     }
 }
 
-DynamicResourceManager::State::Resource::Resource(
+CustomResourceManager::State::Resource::Resource(
     const String & name,
     EventQueue * event_queue,
     const Poco::Util::AbstractConfiguration & config,
@@ -92,7 +91,7 @@ DynamicResourceManager::State::Resource::Resource(
         throw Exception(ErrorCodes::INVALID_SCHEDULER_NODE, "undefined root node path '/' for resource '{}'", name);
 }
 
-DynamicResourceManager::State::Resource::~Resource()
+CustomResourceManager::State::Resource::~Resource()
 {
     // NOTE: we should rely on `attached_to` and cannot use `parent`,
     // NOTE: because `parent` can be `nullptr` in case attachment is still in event queue
@@ -106,14 +105,14 @@ DynamicResourceManager::State::Resource::~Resource()
     }
 }
 
-DynamicResourceManager::State::Node::Node(const String & name, EventQueue * event_queue, const Poco::Util::AbstractConfiguration & config, const std::string & config_prefix)
+CustomResourceManager::State::Node::Node(const String & name, EventQueue * event_queue, const Poco::Util::AbstractConfiguration & config, const std::string & config_prefix)
     : type(config.getString(config_prefix + ".type", "fifo"))
     , ptr(SchedulerNodeFactory::instance().get(type, event_queue, config, config_prefix))
 {
     ptr->basename = name;
 }
 
-bool DynamicResourceManager::State::Resource::equals(const DynamicResourceManager::State::Resource & o) const
+bool CustomResourceManager::State::Resource::equals(const CustomResourceManager::State::Resource & o) const
 {
     if (nodes.size() != o.nodes.size())
         return false;
@@ -130,15 +129,16 @@ bool DynamicResourceManager::State::Resource::equals(const DynamicResourceManage
     return true;
 }
 
-bool DynamicResourceManager::State::Node::equals(const DynamicResourceManager::State::Node & o) const
+bool CustomResourceManager::State::Node::equals(const CustomResourceManager::State::Node & o) const
 {
     if (type != o.type)
         return false;
     return ptr->equals(o.ptr.get());
 }
 
-DynamicResourceManager::Classifier::Classifier(const DynamicResourceManager::StatePtr & state_, const String & classifier_name)
-    : state(state_)
+CustomResourceManager::Classifier::Classifier(const ClassifierSettings & settings_, const CustomResourceManager::StatePtr & state_, const String & classifier_name)
+    : settings(settings_)
+    , state(state_)
 {
     // State is immutable, but nodes are mutable and thread-safe
     // So it's safe to obtain node pointers w/o lock
@@ -162,21 +162,28 @@ DynamicResourceManager::Classifier::Classifier(const DynamicResourceManager::Sta
     }
 }
 
-ResourceLink DynamicResourceManager::Classifier::get(const String & resource_name)
+bool CustomResourceManager::Classifier::has(const String & resource_name)
+{
+    return resources.contains(resource_name);
+}
+
+ResourceLink CustomResourceManager::Classifier::get(const String & resource_name)
 {
     if (auto iter = resources.find(resource_name); iter != resources.end())
         return iter->second;
-    else
+    if (settings.throw_on_unknown_workload)
         throw Exception(ErrorCodes::RESOURCE_ACCESS_DENIED, "Access denied to resource '{}'", resource_name);
+    else
+        return ResourceLink{}; // unlimited access
 }
 
-DynamicResourceManager::DynamicResourceManager()
+CustomResourceManager::CustomResourceManager()
     : state(new State())
 {
-    scheduler.start();
+    scheduler.start("Sch.CstmResMngr");
 }
 
-void DynamicResourceManager::updateConfiguration(const Poco::Util::AbstractConfiguration & config)
+void CustomResourceManager::updateConfiguration(const Poco::Util::AbstractConfiguration & config)
 {
     StatePtr new_state = std::make_shared<State>(scheduler.event_queue, config);
 
@@ -184,14 +191,20 @@ void DynamicResourceManager::updateConfiguration(const Poco::Util::AbstractConfi
 
     // Resource update leads to loss of runtime data of nodes and may lead to temporary violation of constraints (e.g. limits)
     // Try to minimise this by reusing "equal" resources (initialized with the same configuration).
+    std::vector<State::ResourcePtr> resources_to_attach;
     for (auto & [name, new_resource] : new_state->resources)
     {
         if (auto iter = state->resources.find(name); iter != state->resources.end()) // Resource update
         {
             State::ResourcePtr old_resource = iter->second;
             if (old_resource->equals(*new_resource))
+            {
                 new_resource = old_resource; // Rewrite with older version to avoid loss of runtime data
+                continue;
+            }
         }
+        // It is new or updated resource
+        resources_to_attach.emplace_back(new_resource);
     }
 
     // Commit new state
@@ -199,23 +212,26 @@ void DynamicResourceManager::updateConfiguration(const Poco::Util::AbstractConfi
     state = new_state;
 
     // Attach new and updated resources to the scheduler
-    for (auto & [name, resource] : new_state->resources)
+    for (auto & resource : resources_to_attach)
     {
         const SchedulerNodePtr & root = resource->nodes.find("/")->second.ptr;
-        if (root->parent == nullptr)
+        resource->attached_to = &scheduler;
+        scheduler.event_queue->enqueue([this, root]
         {
-            resource->attached_to = &scheduler;
-            scheduler.event_queue->enqueue([this, root]
-            {
-                scheduler.attachChild(root);
-            });
-        }
+            scheduler.attachChild(root);
+        });
     }
 
     // NOTE: after mutex unlock `state` became available for Classifier(s) and must be immutable
 }
 
-ClassifierPtr DynamicResourceManager::acquire(const String & classifier_name)
+bool CustomResourceManager::hasResource(const String & resource_name) const
+{
+    std::lock_guard lock{mutex};
+    return state->resources.contains(resource_name);
+}
+
+ClassifierPtr CustomResourceManager::acquire(const String & classifier_name, const ClassifierSettings & settings)
 {
     // Acquire a reference to the current state
     StatePtr state_ref;
@@ -224,10 +240,10 @@ ClassifierPtr DynamicResourceManager::acquire(const String & classifier_name)
         state_ref = state;
     }
 
-    return std::make_shared<Classifier>(state_ref, classifier_name);
+    return std::make_shared<Classifier>(settings, state_ref, classifier_name);
 }
 
-void DynamicResourceManager::forEachNode(IResourceManager::VisitorFunc visitor)
+void CustomResourceManager::forEachNode(IResourceManager::VisitorFunc visitor)
 {
     // Acquire a reference to the current state
     StatePtr state_ref;
@@ -242,17 +258,12 @@ void DynamicResourceManager::forEachNode(IResourceManager::VisitorFunc visitor)
     {
         for (auto & [name, resource] : state_ref->resources)
             for (auto & [path, node] : resource->nodes)
-                visitor(name, path, node.type, node.ptr);
+                visitor(name, path, node.ptr.get());
         promise.set_value();
     });
 
     // Block until execution is done in the scheduler thread
     future.get();
-}
-
-void registerDynamicResourceManager(ResourceManagerFactory & factory)
-{
-    factory.registerMethod<DynamicResourceManager>("dynamic");
 }
 
 }

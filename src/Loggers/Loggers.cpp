@@ -3,6 +3,7 @@
 #include "OwnFormattingChannel.h"
 #include "OwnPatternFormatter.h"
 #include "OwnSplitChannel.h"
+#include "OwnFileChannel.h"
 
 #include <iostream>
 #include <sstream>
@@ -93,10 +94,11 @@ void Loggers::buildLoggers(Poco::Util::AbstractConfiguration & config, Poco::Log
         max_log_level = std::max(log_level, max_log_level);
 
         // Set up two channel chains.
-        log_file = new Poco::FileChannel;
+        log_file = new DB::OwnFileChannel;
         log_file->setProperty(Poco::FileChannel::PROP_PATH, fs::weakly_canonical(log_path));
-        log_file->setProperty(Poco::FileChannel::PROP_ROTATION, config.getRawString("logger.size", "100M"));
-        log_file->setProperty(Poco::FileChannel::PROP_ARCHIVE, "number");
+        log_file->setProperty(Poco::FileChannel::PROP_ROTATION, config.getRawString("logger.rotation", "100M"));
+        log_file->setProperty(Poco::FileChannel::PROP_ARCHIVE, "timestamp");
+        log_file->setProperty(Poco::FileChannel::PROP_TIMES, "local");
         log_file->setProperty(Poco::FileChannel::PROP_COMPRESS, config.getRawString("logger.compress", "true"));
         log_file->setProperty(Poco::FileChannel::PROP_STREAMCOMPRESS, config.getRawString("logger.stream_compress", "false"));
         log_file->setProperty(Poco::FileChannel::PROP_PURGECOUNT, config.getRawString("logger.count", "1"));

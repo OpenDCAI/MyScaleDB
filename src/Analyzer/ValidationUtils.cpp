@@ -9,6 +9,16 @@
 #include <Analyzer/AggregationUtils.h>
 #include <Analyzer/WindowFunctionsUtils.h>
 
+#include <Analyzer/IdentifierNode.h>
+#include <Analyzer/SortNode.h>
+#include <Interpreters/DatabaseCatalog.h>
+#include <Storages/IStorage.h>
+#include <Storages/MergeTree/MergeTreeSettings.h>
+#include <AIDB/Analyzer/SpecialSearchFunctionsUtils.h>
+#include <AIDB/Common/VICommon.h>
+#include <AIDB/Utils/CommonUtils.h>
+#include <AIDB/Utils/VSUtils.h>
+
 namespace DB
 {
 
@@ -357,6 +367,266 @@ void validateAggregates(const QueryTreeNodePtr & query_node, AggregatesValidatio
         query_node_typed.isGroupByWithGroupingSets();
     if (!has_aggregation && (query_node_typed.isGroupByWithTotals() || aggregation_with_rollup_or_cube_or_grouping_sets))
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "WITH TOTALS, ROLLUP, CUBE or GROUPING SETS are not supported without aggregation");
+}
+
+void validateHybridSearchFuncs(const QueryTreeNodePtr & query_node, bool & need_resolve_order_by, NamesAndTypes & projection_columns)
+{
+    auto & query_node_typed = query_node->as<QueryNode &>();
+
+    QueryTreeNodes hybrid_function_nodes;
+    QueryTreeNodes all_distance_funcs;
+    collectHybridSearchFunctionNodes(query_node, hybrid_function_nodes, &all_distance_funcs);
+
+    if (hybrid_function_nodes.size() == 0)
+        return;
+
+    if (hybrid_function_nodes.size() > 1)
+    {
+        size_t distance_funcs = 0;
+
+        /// Support multiple distance functions
+        for (const auto & search_func_node : hybrid_function_nodes)
+        {
+            auto * function_node = search_func_node->as<FunctionNode>();
+            if (!function_node)
+                throw Exception(ErrorCodes::SYNTAX_ERROR, "Invalid hybrid search function");
+
+            String func_name = function_node->getFunctionName();
+            if (isDistance(func_name))
+                distance_funcs++;
+        }
+
+        if (hybrid_function_nodes.size() != distance_funcs)
+            throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Only support multiple distance functions in one query now");
+
+        /// multiple distances: need to update function name to add alias name or hash
+        for (auto & distance_func_node : all_distance_funcs)
+        {
+            if (auto * distance_func_typed = distance_func_node->as<FunctionNode>())
+                distance_func_typed->updateFuncResultNameForMultipleDistances();
+        }
+    }
+
+    /// Update name of hybird search functions in projection columns to alias name
+    auto & projection_nodes = query_node_typed.getProjection().getNodes();
+
+    if (projection_columns.size() == projection_nodes.size())
+    {
+        for (size_t i = 0; i < projection_nodes.size(); ++i)
+        {
+            const auto project_node = projection_nodes[i];
+            if (const auto * function_node = project_node->as<FunctionNode>())
+            {
+                if (function_node->isSpecialSearchFunction())
+                {
+                    auto alias_name = function_node->getAlias();
+                    if (projection_columns[i].name != alias_name)
+                        projection_columns[i].name = alias_name;
+                }
+            }
+        }
+    }
+
+    auto * function_node = hybrid_function_nodes[0]->as<FunctionNode>();
+    if (!function_node || !function_node->getSpecialSearchFunction())
+        throw Exception(ErrorCodes::SYNTAX_ERROR, "Invalid hybrid search function");
+
+    String func_name = function_node->getFunctionName();
+    String function_col_name = function_node->getSpecialSearchFunction()->getResultColumnName(); /// column name of search function
+
+    /// Remove the restriction that distance() function must exist in order by clause
+    if (isVectorScanFunc(func_name))
+    {
+        /// Add default order by clause if not specified, reference buildSortList()
+        if (!query_node_typed.hasOrderBy())
+        {
+            auto default_order_by_list_node = std::make_shared<ListNode>();
+            default_order_by_list_node->getNodes().reserve(2);
+
+            auto sort_direction = SortDirection::ASCENDING;
+
+            auto virtual_part_sort_expression = std::make_shared<IdentifierNode>(Identifier("_part"));
+            auto virtual_part_sort_node = std::make_shared<SortNode>(std::move(virtual_part_sort_expression), sort_direction);
+
+            auto virtual_row_id_sort_expression = std::make_shared<IdentifierNode>(Identifier("_part_offset"));
+            auto virtual_row_id_sort_node = std::make_shared<SortNode>(std::move(virtual_row_id_sort_expression), sort_direction);
+
+            default_order_by_list_node->getNodes().push_back(std::move(virtual_part_sort_node));
+            default_order_by_list_node->getNodes().push_back(std::move(virtual_row_id_sort_node));
+
+            query_node_typed.getOrderByNode() = std::move(default_order_by_list_node);
+
+            need_resolve_order_by = true;
+        }
+    }
+    else /// TextSearch/HybridSearch
+    {
+        if (!query_node_typed.hasOrderBy())
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support {} function without ORDER BY clause", func_name);
+
+        /// Further check if hybrid search function column exists in ORDER BY
+        if (!hasHybridSearchFunctionNodes(query_node_typed.getOrderByNode()))
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support without {} function inside ORDER BY clause", func_name);
+    }
+
+    bool is_batch = isBatchDistance(func_name);
+    if (is_batch && !query_node_typed.hasLimitByLimit())
+        throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support batch {} function without LIMIT N BY clause", func_name);
+    else if (!is_batch && !query_node_typed.hasLimit())
+        throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support {} function without LIMIT N clause", func_name);
+
+    /// Some checks in collectForXXXSearchFunctions()
+    /// Get search column from argument
+    QueryTreeNodePtr vector_col_node;
+    QueryTreeNodePtr text_col_node;
+    QueryTreeNodePtr sparse_col_node;
+    bool has_vector = false, has_text = false, has_sparse = false;
+    QueryTreeNodes argument_nodes = function_node->getArguments().getNodes();
+
+    if (isTextSearch(func_name))
+    {
+        has_text = true;
+        text_col_node = argument_nodes[0];
+    }
+    else if (isVectorScanFunc(func_name))
+    {
+        has_vector = true;
+        vector_col_node = argument_nodes[0];
+    }
+    else if (isSparseSearch(func_name))
+    {
+        has_sparse = true;
+        sparse_col_node = argument_nodes[0];
+    }
+    else if (isHybridSearch(func_name))
+    {
+        /// Support any two different types among [vector, text, sparse]
+        for (size_t arg_idx = 0; arg_idx < 2; ++arg_idx)
+        {
+            QueryTreeNodePtr arg_node = argument_nodes[arg_idx];
+            if (auto * column_node = arg_node->as<ColumnNode>())
+            {
+                /// Infer the search argument type(vector, text, sparse) from the search column type
+                switch (inferSearchModeInHybridSearch(column_node->getColumn()))
+                {
+                    case HybridSearchFuncType::VECTOR_SCAN:
+                        has_vector = true;
+                        vector_col_node = arg_node;
+                        break;
+                    case HybridSearchFuncType::TEXT_SEARCH:
+                        has_text = true;
+                        text_col_node = arg_node;
+                        break;
+                    case HybridSearchFuncType::SPARSE_SEARCH:
+                        has_sparse = true;
+                        sparse_col_node = arg_node;
+                        break;
+                    default:
+                        throw Exception(ErrorCodes::INCORRECT_DATA, "Hybrid search function only support columns with vector or Fts or sparse index");
+                }
+            }
+            else if (auto * arg_function_node = arg_node->as<FunctionNode>(); arg_function_node && arg_function_node->getFunctionName() == "mapKeys")
+            {
+                has_text = true;
+                text_col_node = arg_node;
+            }
+            else
+            {
+                throw Exception(ErrorCodes::SYNTAX_ERROR, "The {} argument of {} function should be a column with vector or Fts or sparse index", arg_idx, func_name);
+            }
+        }
+
+        if ((has_vector + has_text + has_sparse) != 2)
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "Hybrid search function only support two different types among [vector, text, sparse] in one query");
+    }
+
+    /// Check search column data type
+    if (has_text)
+    {
+        bool is_mapkeys = false;
+
+        auto * text_column = text_col_node->as<ColumnNode>();
+        if (!text_column)
+        {
+            /// Check mapKeys for text column
+            if (auto * text_function_node = text_col_node->as<FunctionNode>())
+            {
+                if ((text_function_node->getFunctionName() == "mapKeys") && text_function_node->getArguments().getNodes().size() == 1)
+                {
+                    text_column = text_function_node->getArguments().getNodes()[0]->as<ColumnNode>();
+                    is_mapkeys = true;
+                }
+            }
+        }
+
+        if (!text_column)
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "The {} argument of {} function should be text column name", has_vector ? "second" : "first", func_name);
+
+        DataTypePtr search_text_column_type = text_column->getColumnType();
+        checkTextSearchColumnDataType(search_text_column_type, is_mapkeys);
+
+        /// Check if table contains the same column as search function column.
+        if (auto text_column_source = text_column->getColumnSourceOrNull())
+        {
+            if (const auto * table_node = text_column_source->as<TableNode>())
+            {
+                if (auto metadata_snapshot = table_node->getStorage()->getInMemoryMetadataPtr())
+                {
+                    if (metadata_snapshot->getColumns().has(function_col_name))
+                        throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support search function on table with column name '{}'", function_col_name);
+                }
+            }
+        }
+    }
+
+    if (has_sparse)
+    {
+        auto * sparse_column = sparse_col_node->as<ColumnNode>();
+
+        if (!sparse_column)
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "The first argument of {} function should be sparse column name", func_name);
+
+        DataTypePtr search_sparse_column_type = sparse_column->getColumnType();
+        checkSparseSearchColumnDataType(search_sparse_column_type);
+
+        /// Check if table contains the same column as search function column.
+        if (auto sparse_column_source = sparse_column->getColumnSourceOrNull())
+        {
+            if (const auto * table_node = sparse_column_source->as<TableNode>())
+            {
+                if (auto metadata_snapshot = table_node->getStorage()->getInMemoryMetadataPtr())
+                {
+                    if (metadata_snapshot->getColumns().has(function_col_name))
+                        throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support search function on table with column name '{}'", function_col_name);
+                }
+            }
+        }
+    }
+
+    if (has_text || has_sparse)
+        checkOrderBySortDirection(func_name, query_node, SortDirection::DESCENDING);
+    else if (has_vector)
+    {
+        auto * vector_column = vector_col_node->as<ColumnNode>();
+        if (!vector_column)
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "The {} argument of {} function should be vector column name", has_text ? "second" : "first", func_name);
+
+        /// Check if table with vector index contains the same column as search function column.
+        if (auto vector_column_source = vector_column->getColumnSourceOrNull())
+        {
+            if (const auto * table_node = vector_column_source->as<TableNode>())
+            {
+                if (auto metadata_snapshot = table_node->getStorage()->getInMemoryMetadataPtr())
+                {
+                    if (metadata_snapshot->getColumns().has(function_col_name))
+                        throw Exception(ErrorCodes::SYNTAX_ERROR, "Not support search function on table with column name '{}'", function_col_name);
+                }
+            }
+        }
+
+        /// Support multiple vector indices on a single vector column
+        /// Delay the check of sort direction for vector search when vector index name is got from parameters
+    }
 }
 
 namespace

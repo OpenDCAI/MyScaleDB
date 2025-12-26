@@ -42,11 +42,13 @@ public:
         Block header,
         UInt64 num_candidates_,
         String fusion_type_,
+        std::vector<HybridSearchFuncType> search_func_list_,
         UInt64 fusion_k_,
         Float32 fusion_weight_,
         Int8 vector_scan_order_direction_)
         : IAccumulatingTransform(header, header)
         , num_candidates(num_candidates_)
+        , search_func_list(search_func_list_)
         , fusion_k(fusion_k_)
         , fusion_weight(fusion_weight_)
         , vector_scan_order_direction(vector_scan_order_direction_)
@@ -64,6 +66,9 @@ public:
             fusion_type = HybridSearchFusionType::RRF;
         else
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown HybridSearch fusion type: {}", fusion_type_);
+
+        if (search_func_list.size() != 2)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "HybridSearch fusion only supports two search types");
     }
 
     void consume(Chunk block) override { chunks.push(std::move(block)); }
@@ -75,6 +80,7 @@ private:
 
     UInt64 num_candidates = 0;
     HybridSearchFusionType fusion_type;
+    std::vector<HybridSearchFuncType> search_func_list;
     UInt64 fusion_k;
     Float32 fusion_weight;
 

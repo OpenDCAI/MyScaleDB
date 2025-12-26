@@ -53,8 +53,10 @@ struct TreeRewriterResult
     std::vector<const ASTFunction *> hybrid_search_funcs;
     HybridSearchFuncType search_func_type = HybridSearchFuncType::UNKNOWN_FUNC;
 
-    /// Save vector scan metric_type
-    std::vector<String> vector_scan_metric_types;
+    /// The search types in the hybrid search function.
+    std::vector<HybridSearchFuncType> search_func_in_hybrid_search;
+
+    /// Save vector scan vector search type
     std::vector<Search::DataType> vector_search_types;
     UInt64 limit_length = 0;
 

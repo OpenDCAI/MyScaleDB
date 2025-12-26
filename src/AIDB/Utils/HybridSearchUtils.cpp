@@ -28,6 +28,21 @@
 namespace DB
 {
 
+UInt8 getHybridSearchScoreType(HybridSearchFuncType search_type)
+{
+    switch (search_type)
+    {
+        case HybridSearchFuncType::VECTOR_SCAN:
+            return VECTOR_SEARCH_SCORE_TYPE;
+        case HybridSearchFuncType::TEXT_SEARCH:
+            return TEXT_SEARCH_SCORE_TYPE;
+        case HybridSearchFuncType::SPARSE_SEARCH:
+            return SPARSE_SEARCH_SCORE_TYPE;
+        default:
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Unsupported search type in HybridSearch function");
+    }
+}
+
 /// Replace limit with num_candidates that is equal to limit * hybrid_search_top_k_multiple_base
 inline void replaceLimitAST(ASTPtr & ast, UInt64 replaced_limit)
 {
@@ -35,27 +50,22 @@ inline void replaceLimitAST(ASTPtr & ast, UInt64 replaced_limit)
     if (!select_query->limitLength())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "No limit in Distributed HybridSearch AST");
 
-    auto limit_ast = select_query->limitLength()->as<ASTLiteral>();
-    if (!limit_ast)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Bad limit in Distributed HybridSearch AST");
-
-    limit_ast->value = replaced_limit;
+    /// limit ast may be a CAST function when new analyzer is enabled.
+    select_query->limitLength() = std::make_shared<ASTLiteral>(replaced_limit);
 }
 
-/// Use Distributed Hybrid Search AST to create two separate ASTs for vector search and text search
-void splitHybridSearchAST(
-    ASTPtr & hybrid_search_ast,
-    ASTPtr & vector_search_ast,
-    ASTPtr & text_search_ast,
-    int distance_order_by_direction,
-    UInt64 vector_limit,
-    UInt64 text_limit,
-    bool enable_nlq,
-    String text_operator)
+/// Based on the original hybrid search query AST, create two separate ASTs
+/// The returned ASTs in query_asts are consistent with the original hybrid search query AST
+void splitHybridSearchAST(ASTPtr & hybrid_search_ast, HybridSearchInfoPtr & hybrid_search_info, std::vector<ASTPtr> & query_asts)
 {
+    query_asts.resize(2);
+    size_t query_ast_idx = 0;
+
     /// Replace the ASTFunction, ASTOrderByElement and LimitAST for Vector Search
+    auto makeVectorSearchAST = [&](size_t vector_column_idx, size_t query_vector_idx)
     {
-        vector_search_ast = hybrid_search_ast->clone();
+        ASTPtr vector_search_ast = hybrid_search_ast->clone();
+
         const auto * select_vector_query = vector_search_ast->as<ASTSelectQuery>();
 
         for (auto & child : select_vector_query->select()->children)
@@ -64,7 +74,9 @@ void splitHybridSearchAST(
             if (function && isHybridSearchFunc(function->name))
             {
                 child = makeASTFunction(
-                    DISTANCE_FUNCTION, function->arguments->children[0]->clone(), function->arguments->children[2]->clone());
+                    DISTANCE_FUNCTION,
+                    function->arguments->children[vector_column_idx]->clone(),
+                    function->arguments->children[query_vector_idx]->clone());
             }
 
             auto identifier = child->as<ASTIdentifier>();
@@ -92,22 +104,29 @@ void splitHybridSearchAST(
             if (function && isHybridSearchFunc(function->name))
             {
                 order_by_element->children.at(0) = makeASTFunction(
-                    DISTANCE_FUNCTION, function->arguments->children[0]->clone(), function->arguments->children[2]->clone());
-                order_by_element->direction = distance_order_by_direction;
+                    DISTANCE_FUNCTION,
+                    function->arguments->children[vector_column_idx]->clone(),
+                    function->arguments->children[query_vector_idx]->clone());
+                order_by_element->direction = hybrid_search_info->vector_scan_info->vector_scan_descs[0].direction;
             }
         }
 
-        replaceLimitAST(vector_search_ast, vector_limit);
-    }
+        replaceLimitAST(vector_search_ast, hybrid_search_info->vector_scan_info->vector_scan_descs[0].topk);
+        query_asts[query_ast_idx++] = vector_search_ast;
+    };
 
     /// Replace the ASTFunction, ASTOrderByElement and LimitAST for Text Search
+    auto makeTextSearchAST = [&](size_t text_column_idx, size_t query_text_idx)
     {
-        text_search_ast = hybrid_search_ast->clone();
+        ASTPtr text_search_ast = hybrid_search_ast->clone();
+
         const auto * select_text_query = text_search_ast->as<ASTSelectQuery>();
 
         auto text_search_function_parameters = std::make_shared<ASTExpressionList>();
-        text_search_function_parameters->children.push_back(std::make_shared<ASTLiteral>("enable_nlq=" + std::to_string(enable_nlq)));
-        text_search_function_parameters->children.push_back(std::make_shared<ASTLiteral>("operator=" + text_operator));
+        text_search_function_parameters->children.push_back(
+            std::make_shared<ASTLiteral>("enable_nlq=" + std::to_string(hybrid_search_info->text_search_info->enable_nlq)));
+        text_search_function_parameters->children.push_back(
+            std::make_shared<ASTLiteral>("operator=" + hybrid_search_info->text_search_info->text_operator));
 
         /// Replace the HybridSearch function with TEXT_SEARCH_FUNCTION in the select list
         for (auto & child : select_text_query->select()->children)
@@ -116,7 +135,9 @@ void splitHybridSearchAST(
             if (function && isHybridSearchFunc(function->name))
             {
                 std::shared_ptr<ASTFunction> text_search_function = makeASTFunction(
-                    TEXT_SEARCH_FUNCTION, function->arguments->children[1]->clone(), function->arguments->children[3]->clone());
+                    TEXT_SEARCH_FUNCTION,
+                    function->arguments->children[text_column_idx]->clone(),
+                    function->arguments->children[query_text_idx]->clone());
                 text_search_function->parameters = text_search_function_parameters->clone();
                 text_search_function->children.push_back(text_search_function->parameters);
                 child = text_search_function;
@@ -147,7 +168,9 @@ void splitHybridSearchAST(
             if (function && isHybridSearchFunc(function->name))
             {
                 std::shared_ptr<ASTFunction> text_search_function = makeASTFunction(
-                    TEXT_SEARCH_FUNCTION, function->arguments->children[1]->clone(), function->arguments->children[3]->clone());
+                    TEXT_SEARCH_FUNCTION,
+                    function->arguments->children[text_column_idx]->clone(),
+                    function->arguments->children[query_text_idx]->clone());
                 text_search_function->parameters = text_search_function_parameters->clone();
                 text_search_function->children.push_back(text_search_function->parameters);
 
@@ -156,125 +179,164 @@ void splitHybridSearchAST(
             }
         }
 
-        replaceLimitAST(text_search_ast, text_limit);
+        replaceLimitAST(text_search_ast, hybrid_search_info->text_search_info->topk);
+        query_asts[query_ast_idx++] = text_search_ast;
+    };
+
+    /// Replace the ASTFunction, ASTOrderByElement and LimitAST for Sparse Search
+    auto makeSparseSearchAST = [&](size_t sparse_column_idx, size_t query_sparse_idx)
+    {
+        ASTPtr sparse_search_ast = hybrid_search_ast->clone();
+
+        const auto * select_sparse_query = sparse_search_ast->as<ASTSelectQuery>();
+
+        /// Replace the HybridSearch function with SPARSE_SEARCH_FUNCTION in the select list
+        for (auto & child : select_sparse_query->select()->children)
+        {
+            auto function = child->as<ASTFunction>();
+            if (function && isHybridSearchFunc(function->name))
+            {
+                child = makeASTFunction(
+                    SPARSE_SEARCH_FUNCTION,
+                    function->arguments->children[sparse_column_idx]->clone(),
+                    function->arguments->children[query_sparse_idx]->clone());
+            }
+
+            auto identifier = child->as<ASTIdentifier>();
+            if (!identifier)
+                continue;
+            else if (identifier->name() == SCORE_TYPE_COLUMN.name)
+            {
+                /// Delete the SCORE_TYPE_COLUMN from the select list
+                select_sparse_query->select()->children.erase(
+                    std::remove(select_sparse_query->select()->children.begin(), select_sparse_query->select()->children.end(), child),
+                    select_sparse_query->select()->children.end());
+            }
+        }
+
+        /// Replace the HybridSearch function with TEXT_SEARCH_FUNCTION in the ORDER BY
+        if (!select_sparse_query->orderBy())
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "No ORDER BY in Distributed HybridSearch AST");
+        for (auto & child : select_sparse_query->orderBy()->children)
+        {
+            auto * order_by_element = child->as<ASTOrderByElement>();
+            if (!order_by_element || order_by_element->children.empty())
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Bad ORDER BY expression AST");
+
+            auto function = order_by_element->children.at(0)->as<ASTFunction>();
+            if (function && isHybridSearchFunc(function->name))
+            {
+                order_by_element->children.at(0) = makeASTFunction(
+                    SPARSE_SEARCH_FUNCTION,
+                    function->arguments->children[sparse_column_idx]->clone(),
+                    function->arguments->children[query_sparse_idx]->clone());
+                order_by_element->direction = -1;
+            }
+        }
+
+        replaceLimitAST(sparse_search_ast, hybrid_search_info->sparse_search_info->topk);
+        query_asts[query_ast_idx++] = sparse_search_ast;
+    };
+
+    for (size_t i = 0; i < hybrid_search_info->search_func_list.size(); i++)
+    {
+        switch (hybrid_search_info->search_func_list[i])
+        {
+            case HybridSearchFuncType::VECTOR_SCAN:
+                makeVectorSearchAST(i, i + 2);
+                break;
+            case HybridSearchFuncType::TEXT_SEARCH:
+                makeTextSearchAST(i, i + 2);
+                break;
+            case HybridSearchFuncType::SPARSE_SEARCH:
+                makeSparseSearchAST(i, i + 2);
+                break;
+            default:
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Unsupported search type in HybridSearch function");
+        }
     }
 }
 
-/// RRF_score = 1.0 / (fusion_k + rank(fusion_id_bm25)) + 1.0 / (fusion_k + rank(fusion_id_distance))
+/// RRF_score = 1.0 / (fusion_k + rank(search_mode_1)) + 1.0 / (fusion_k + rank(search_mode_2))
 void RankFusion(
     std::map<std::tuple<UInt32, UInt64, UInt64>, Float32> & fusion_id_with_score,
-    const ScoreWithPartIndexAndLabels & vec_scan_result_dataset,
-    const ScoreWithPartIndexAndLabels & text_search_result_dataset,
+    const ScoreWithPartIndexAndLabels & search_result_dataset_0,
+    const ScoreWithPartIndexAndLabels & search_result_dataset_1,
     const UInt64 fusion_k,
     LoggerPtr log)
 {
-    size_t idx = 0;
-    for (const auto & vector_score_with_label : vec_scan_result_dataset)
+    auto processDataset = [&](const ScoreWithPartIndexAndLabels & dataset)
     {
-        auto fusion_id
-            = std::make_tuple(vector_score_with_label.shard_num, vector_score_with_label.part_index, vector_score_with_label.label_id);
+        size_t idx = 0;
 
-        /// For new (shard_num, part_index, label_id) tuple, map will insert.
-        /// fusion_id_with_score map saved the fusion score for a (shard_num, part_index, label_id) tuple.
-        /// AS for single-shard hybrid search, shard_num is always 0.
-        fusion_id_with_score[fusion_id] += 1.0f / (fusion_k + idx + 1);
-        idx++;
+        LOG_TRACE(log, "fusion process dataset size: {}", dataset.size());
+        for (const auto & score_with_label : dataset)
+        {
+            auto fusion_id = std::make_tuple(score_with_label.shard_num, score_with_label.part_index, score_with_label.label_id);
 
-        LOG_TRACE(
-            log,
-            "fusion_id: [{}, {}, {}], ranked_score: {}",
-            vector_score_with_label.shard_num,
-            vector_score_with_label.part_index,
-            vector_score_with_label.label_id,
-            fusion_id_with_score[fusion_id]);
-    }
+            /// For new (shard_num, part_index, label_id) tuple, map will insert.
+            /// fusion_id_with_score map saved the fusion score for a (shard_num, part_index, label_id) tuple.
+            /// AS for single-shard hybrid search, shard_num is always 0.
+            auto fusion_score = 1.0f / (fusion_k + idx + 1);
+            fusion_id_with_score[fusion_id] += fusion_score;
+            idx++;
 
-    idx = 0;
-    for (const auto & text_score_with_label : text_search_result_dataset)
-    {
-        auto fusion_id = std::make_tuple(text_score_with_label.shard_num, text_score_with_label.part_index, text_score_with_label.label_id);
+            LOG_TRACE(
+                log,
+                "fusion_id: [{}, {}, {}], ranked_score: {}",
+                score_with_label.shard_num,
+                score_with_label.part_index,
+                score_with_label.label_id,
+                fusion_score);
+        }
+    };
 
-        /// Insert or update fusion score for fusion_id
-        fusion_id_with_score[fusion_id] += 1.0f / (fusion_k + idx + 1);
-        idx++;
-
-        LOG_TRACE(
-            log,
-            "fusion_id: [{}, {}, {}], ranked_score: {}",
-            text_score_with_label.shard_num,
-            text_score_with_label.part_index,
-            text_score_with_label.label_id,
-            fusion_id_with_score[fusion_id]);
-    }
+    processDataset(search_result_dataset_0);
+    processDataset(search_result_dataset_1);
 }
 
-/// RSF_score = normalized_bm25_score * fusion_weight + normalized_distance_score * (1 - fusion_weight)
+/// RSF_score = fusion_weight * normalized_score_0 + (1 - fusion_weight) * normalized_score_1
 void RelativeScoreFusion(
     std::map<std::tuple<UInt32, UInt64, UInt64>, Float32> & fusion_id_with_score,
-    const ScoreWithPartIndexAndLabels & vec_scan_result_dataset,
-    const ScoreWithPartIndexAndLabels & text_search_result_dataset,
-    const Float32 fusion_weight,
-    const Int8 vector_scan_direction,
+    const ScoreWithPartIndexAndLabels & search_result_dataset_0,
+    const ScoreWithPartIndexAndLabels & search_result_dataset_1,
+    const Float32 fusion_weight_0,
     LoggerPtr log)
 {
-    /// Normalize text search score
-    std::vector<Float32> norm_score;
-    computeNormalizedScore(text_search_result_dataset, norm_score, log);
-
-    LOG_TRACE(log, "Text Search Scores:");
-    for (size_t idx = 0; idx < text_search_result_dataset.size(); idx++)
+    auto processDataset = [&](const ScoreWithPartIndexAndLabels & dataset, const Float32 fusion_weight)
     {
-        auto fusion_id = std::make_tuple(
-            text_search_result_dataset[idx].shard_num,
-            text_search_result_dataset[idx].part_index,
-            text_search_result_dataset[idx].label_id);
+        std::vector<Float32> norm_score;
+        computeNormalizedScore(dataset, norm_score, log);
 
-        LOG_TRACE(
-            log,
-            "fusion_id=[{}, {}, {}], origin_score={}, norm_score={}",
-            text_search_result_dataset[idx].shard_num,
-            text_search_result_dataset[idx].part_index,
-            text_search_result_dataset[idx].label_id,
-            text_search_result_dataset[idx].score,
-            norm_score[idx]);
+        LOG_INFO(log, "fusion process dataset size: {}", dataset.size());
+        for (size_t idx = 0; idx < dataset.size(); idx++)
+        {
+            auto fusion_id = std::make_tuple(dataset[idx].shard_num, dataset[idx].part_index, dataset[idx].label_id);
 
-        fusion_id_with_score[fusion_id] = norm_score[idx] * fusion_weight;
-    }
+            /// For new (shard_num, part_index, label_id) tuple, map will insert.
+            /// fusion_id_with_score map saved the fusion score for a (shard_num, part_index, label_id) tuple.
+            /// AS for single-shard hybrid search, shard_num is always 0.
+            Float32 fusion_score = fusion_weight * norm_score[idx];
 
-    /// Normalize vector search score
-    norm_score.clear();
-    computeNormalizedScore(vec_scan_result_dataset, norm_score, log);
+            LOG_INFO(
+                log,
+                "fusion_id=[{}, {}, {}], origin_score={}, norm_score={}, fusion_score={}",
+                dataset[idx].shard_num,
+                dataset[idx].part_index,
+                dataset[idx].label_id,
+                dataset[idx].score,
+                norm_score[idx],
+                fusion_score);
 
-    LOG_TRACE(log, "Vector Search Scores:");
-    for (size_t idx = 0; idx < vec_scan_result_dataset.size(); idx++)
-    {
-        auto fusion_id = std::make_tuple(
-            vec_scan_result_dataset[idx].shard_num, vec_scan_result_dataset[idx].part_index, vec_scan_result_dataset[idx].label_id);
+            fusion_id_with_score[fusion_id] += fusion_score;
+        }
+    };
 
-        LOG_TRACE(
-            log,
-            "fusion_id=[{}, {}, {}], origin_score={}, norm_score={}",
-            vec_scan_result_dataset[idx].shard_num,
-            vec_scan_result_dataset[idx].part_index,
-            vec_scan_result_dataset[idx].label_id,
-            vec_scan_result_dataset[idx].score,
-            norm_score[idx]);
-
-        Float32 fusion_distance_score = 0;
-
-        /// 1 - ascending, -1 - descending
-        if (vector_scan_direction == -1)
-            fusion_distance_score = norm_score[idx] * (1 - fusion_weight);
-        else
-            fusion_distance_score = (1 - norm_score[idx]) * (1 - fusion_weight);
-
-        /// Insert or update fusion score for fusion_id
-        fusion_id_with_score[fusion_id] += fusion_distance_score;
-    }
+    processDataset(search_result_dataset_0, fusion_weight_0);
+    processDataset(search_result_dataset_1, 1 - fusion_weight_0);
 }
 
-void computeNormalizedScore(
-    const ScoreWithPartIndexAndLabels & search_result_dataset, std::vector<Float32> & norm_score, LoggerPtr log)
+void computeNormalizedScore(const ScoreWithPartIndexAndLabels & search_result_dataset, std::vector<Float32> & norm_score, LoggerPtr log)
 {
     const auto result_size = search_result_dataset.size();
     if (result_size == 0)
@@ -285,30 +347,27 @@ void computeNormalizedScore(
 
     norm_score.reserve(result_size);
 
-    /// The search_result_dataset is already ordered
-    /// As for bm25 score and metric_type=IP, the scores are in ascending order; otherwise, it is in descending order.
-    Float32 min_score, max_score, min_max_scale;
+    /// The scores in the search_result_dataset are already ordered.
+    Float32 first_score = search_result_dataset[0].score;
+    Float32 last_score = search_result_dataset[result_size - 1].score;
 
-    /// Here assume the scores in score column are ordered in descending order.
-    min_score = search_result_dataset[result_size - 1].score;
-    max_score = search_result_dataset[0].score;
-
-    /// When min_score == max_score, all scores are the same, so the normalized score is 1.0
-    if (min_score == max_score)
+    /// Check for division by zero: when all scores are the same
+    if (std::abs(first_score - last_score) < std::numeric_limits<Float32>::epsilon())
     {
+        /// When all scores are the same, assign normalized score as 1.0
         for (size_t idx = 0; idx < result_size; idx++)
             norm_score.emplace_back(1.0f);
         return;
     }
-    else if (min_score > max_score) /// ASC
-    {
-        std::swap(min_score, max_score);
-    }
 
-    min_max_scale = max_score - min_score;
+    /// Calculate the range for normalization
+    /// We want: first element -> 1.0, last element -> 0.0
+    Float32 score_range = first_score - last_score;
     for (size_t idx = 0; idx < result_size; idx++)
     {
-        Float32 normalizing_score = (search_result_dataset[idx].score - min_score) / min_max_scale;
+        /// Normalize: (current_score - last_score) / (first_score - last_score)
+        /// Normalize scores: first element -> 1.0, last element -> 0.0, regardless of original order
+        Float32 normalizing_score = (search_result_dataset[idx].score - last_score) / score_range;
         norm_score.emplace_back(normalizing_score);
     }
 }

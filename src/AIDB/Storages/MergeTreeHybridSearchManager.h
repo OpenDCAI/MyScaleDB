@@ -27,6 +27,7 @@
 #include <AIDB/Storages/HybridSearchResult.h>
 #include <AIDB/Storages/MergeTreeTextSearchManager.h>
 #include <AIDB/Storages/MergeTreeVSManager.h>
+#include <AIDB/Storages/MergeTreeSparseSearchManager.h>
 
 #include <Common/logger_useful.h>
 
@@ -38,10 +39,10 @@ namespace DB
 {
 
 /// Hybrid search manager, responsible for hybrid search result precompute
-/// After refactor, the work of hybrid manager changed to:
-/// 1. Combine vector scan and full-text search manager to get top-k or first stage vector results for provided data part.
+/// Main work:
+/// 1. Combine [MergeTreeVSManager, MergeTreeTextSearchManager, MergeTreeSparseSearchManager] to get top-k or first stage vector results for provided data part.
 /// 2. Provide static hybridSearch() and fusion functions to do fusion on total top-k results from different parts.
-/// 3. Merge hyrbid results on provided data part with other required columns.
+/// 3. Merge hybrid results on provided data part with other required columns.
 class MergeTreeHybridSearchManager : public MergeTreeBaseSearchManager
 {
 public:
@@ -50,11 +51,12 @@ public:
         : MergeTreeBaseSearchManager{metadata_, context_, hybrid_search_info_ ? hybrid_search_info_->function_column_name : ""}
         , hybrid_search_info(hybrid_search_info_)
     {
-        /// Initialize vector scan and text search manager
-        vector_scan_manager = make_shared<MergeTreeVSManager>(
-                metadata_, hybrid_search_info->vector_scan_info, context_, support_two_stage_search_);
-        text_search_manager = make_shared<MergeTreeTextSearchManager>(
-                metadata_, hybrid_search_info->text_search_info, context_);
+        if (hybrid_search_info->vector_scan_info)
+            vector_scan_manager = make_shared<MergeTreeVSManager>(metadata_, hybrid_search_info->vector_scan_info, context_, support_two_stage_search_);
+        if (hybrid_search_info->text_search_info)
+            text_search_manager = make_shared<MergeTreeTextSearchManager>(metadata_, hybrid_search_info->text_search_info, context_);
+        if (hybrid_search_info->sparse_search_info)
+            sparse_search_manager = make_shared<MergeTreeSparseSearchManager>(metadata_, hybrid_search_info->sparse_search_info, context_);
     }
 
     /// Hybrid search has done on all parts, no need to do search and fusion.
@@ -121,6 +123,16 @@ public:
     }
 #endif
 
+    /// Return sparse search result if exists for hybrid search
+    SparseSearchResultPtr getSparseSearchResult()
+    {
+        SparseSearchResultPtr result = nullptr;
+        if (sparse_search_manager && sparse_search_manager->preComputed())
+            result = sparse_search_manager->getSearchResult();
+
+        return result;
+    }
+
     /// Fusion vector scan and full-text search results from all selected parts
     static ScoreWithPartIndexAndLabels hybridSearch(
         const ScoreWithPartIndexAndLabels & vec_scan_result_with_part_index,
@@ -145,6 +157,7 @@ private:
 
     MergeTreeVectorScanManagerPtr vector_scan_manager = nullptr;
     MergeTreeTextSearchManagerPtr text_search_manager = nullptr;
+    MergeTreeSparseSearchManagerPtr sparse_search_manager = nullptr;
 
     LoggerPtr log = getLogger("MergeTreeHybridSearchManager");
 };

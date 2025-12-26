@@ -3,6 +3,7 @@
 #include <Analyzer/InDepthQueryTreeVisitor.h>
 #include <Analyzer/ColumnNode.h>
 #include <Analyzer/JoinNode.h>
+#include <Analyzer/FunctionNode.h>
 
 #include <Planner/PlannerContext.h>
 
@@ -35,7 +36,23 @@ public:
     void visitImpl(const QueryTreeNodePtr & node)
     {
         if (node->getNodeType() != QueryTreeNodeType::COLUMN)
+        {
+            /// Add special search function name
+            if (const auto * function_node = node->as<FunctionNode>())
+            {
+                if (function_node->isSpecialSearchFunction())
+                {
+                    if (auto special_search_func = function_node->getSpecialSearchFunction())
+                    {
+                        const auto column_identifier = special_search_func->getColumnIdentifier();
+                        if (!column_identifier.empty())
+                            used_identifiers.insert(column_identifier);
+                    }
+                }
+            }
+
             return;
+        }
 
         const auto * column_identifier = planner_context->getColumnNodeIdentifierOrNull(node);
         if (!column_identifier)

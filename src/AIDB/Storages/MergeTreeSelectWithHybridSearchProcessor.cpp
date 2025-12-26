@@ -503,9 +503,19 @@ MergeTreeReadTask::BlockAndProgress MergeTreeSelectWithHybridSearchProcessor::re
         cols_size_except_search_cols = cols_size_in_sample_block - vector_scan_cols_names.size();
         ordered_columns.reserve(cols_size_except_search_cols);
 
-        /// Throw exception if vector_scan_cols_names is empty
+        /// Throw exception if vector_scan_cols_names is empty or not exist in result column
         if (vector_scan_cols_names.empty())
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Failed to find any search result column name, this should not happen");
+        else
+        {
+            for (const auto & vec_scan_col_name : vector_scan_cols_names)
+            {
+                if (!sample_block.has(vec_scan_col_name))
+                    throw Exception(ErrorCodes::LOGICAL_ERROR,
+                    "Failed to find search result column name {} in result block with columns `{}`, this should not happen",
+                    vec_scan_col_name, sample_block.dumpNames());
+            }
+        }
     }
     else
         ordered_columns.reserve(cols_size_in_sample_block);
@@ -1366,7 +1376,7 @@ std::pair<AIDB::VIBitmapPtr, bool> MergeTreeSelectWithHybridSearchProcessor::per
     return std::make_pair(filter, rough_set_filter);
 }
 
-VectorAndTextResultInDataParts MergeTreeSelectWithHybridSearchProcessor::selectPartsByVectorAndTextIndexes(
+VectorAndTextResultInDataParts MergeTreeSelectWithHybridSearchProcessor::selectPartsByIndexes(
     const RangesInDataParts & parts_with_ranges,
     const StorageMetadataPtr & metadata_snapshot,
     const SelectQueryInfo & query_info,
@@ -1382,7 +1392,7 @@ VectorAndTextResultInDataParts MergeTreeSelectWithHybridSearchProcessor::selectP
     const MergeTreeData & data,
     const MergeTreeReaderSettings & reader_settings_)
 {
-    OpenTelemetry::SpanHolder span("MergeTreeSelectWithHybridSearchProcessor::selectPartsByVectorAndTextIndexes()");
+    OpenTelemetry::SpanHolder span("MergeTreeSelectWithHybridSearchProcessor::selectPartsByIndexes()");
     VectorAndTextResultInDataParts parts_with_mix_results;
     if (!query_info.has_hybrid_search)
         return parts_with_mix_results;
@@ -1411,8 +1421,13 @@ VectorAndTextResultInDataParts MergeTreeSelectWithHybridSearchProcessor::selectP
         /// Handle four cases: hybrid search, vector scan, text search and sparse search
         if (query_info.hybrid_search_info)
         {
-            auto hybrid_search_mgr = std::make_shared<MergeTreeHybridSearchManager>(metadata_snapshot, query_info.hybrid_search_info,
-                                            context, vec_support_two_stage_searches[0]);
+            MergeTreeHybridSearchManagerPtr hybrid_search_mgr;
+            if (query_info.hybrid_search_info->vector_scan_info)
+                hybrid_search_mgr = std::make_shared<MergeTreeHybridSearchManager>(
+                    metadata_snapshot, query_info.hybrid_search_info, context, vec_support_two_stage_searches[0]);
+            else
+                hybrid_search_mgr
+                    = std::make_shared<MergeTreeHybridSearchManager>(metadata_snapshot, query_info.hybrid_search_info, context);
 #if USE_FTS_INDEX
             hybrid_search_mgr->setBM25Stats(bm25_stats_in_table);
 #endif
@@ -1421,11 +1436,12 @@ VectorAndTextResultInDataParts MergeTreeSelectWithHybridSearchProcessor::selectP
                         block_size_params_, mark_ranges, prewhere_info_copy, reader_settings_,
                         context, num_streams);
 
-            if (hybrid_search_mgr)
-            {
+            if (query_info.hybrid_search_info->vector_scan_info)
                 mix_results.vector_scan_results.emplace_back(hybrid_search_mgr->getVectorScanResult());
+            if (query_info.hybrid_search_info->text_search_info)
                 mix_results.text_search_result = hybrid_search_mgr->getTextSearchResult();
-            }
+            if (query_info.hybrid_search_info->sparse_search_info)
+                mix_results.sparse_search_result = hybrid_search_mgr->getSparseSearchResult();
         }
         else if (query_info.vector_scan_info)
         {

@@ -2428,6 +2428,7 @@ bool MutateTask::prepare()
     context_for_reading->setSetting("apply_mutations_on_fly", false);
     /// Skip using large sets in KeyCondition
     context_for_reading->setSetting("use_index_for_in_with_subqueries_max_values", 100000);
+    context_for_reading->setSetting("use_concurrency_control", false);
 
     /// Optimized lightweight can be applied to wide part only.
     ctx->is_optimized_lwd = ctx->commands->empty() ? false : ctx->commands->front().type == MutationCommand::Type::LIGHTWEIGHT_DELETE;

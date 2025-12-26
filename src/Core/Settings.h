@@ -156,6 +156,7 @@ class IColumn;
     M(Bool, stream_like_engine_allow_direct_select, false, "Allow direct SELECT query for Kafka, RabbitMQ, FileLog, Redis Streams, and NATS engines. In case there are attached materialized views, SELECT query is not allowed even if this setting is enabled.", 0) \
     M(Bool, optimize_move_to_prewhere_for_vector_search, true, "Enables or disables special PREWHERE optimization for vector search in SELECT queries which move all viable WHERE to PREWHERE.", 0) \
     M(Bool, enable_brute_force_vector_search, false, "Enable brute-force search for data parts without vector indexes.", 0) \
+    M(Int32, max_topk_for_index_search, 16384, "Max topk for vector_search/fts_search/hybrid_search.", 0) \
     M(Float, hybrid_search_fusion_weight, 0.5f, "Default fusion_weight for hybrid search Relative Score Fusion (RSF) function. Valid value is in interval [0.0f, 1.0f]", 0) \
     M(UInt64, hybrid_search_fusion_k, 60, "Default fusion_k for hybrid search Reciprocal Rank Fusion (RRF) function", 0) \
     M(UInt64, hybrid_search_top_k_multiple_base, 3, "Default multiple base on top k for num_candidates in hybrid search", 0) \
@@ -163,10 +164,10 @@ class IColumn;
     M(Bool, allow_experimental_optimized_lwd, false, "Enable optimized lightweight DELETE mutations for mergetree tables.", 0) \
     M(UInt64, max_search_result_window, 10000, "The maximum value of n + m in limit clause for pagination in vector/text/hybrid/sparse search", 0) \
     M(Bool, enable_fts_index_for_string_functions, false, "Enable the FTS index to accelerate functions for searching in strings (e.g., LIKE, hasToken, startsWith). Only the raw tokenizer can ensure correct results.", 0) \
-    M(Bool, dfs_query_then_fetch, false, "Enable Distributed Frequency Search (DFS) query to gather global statistical info for accurate BM25 calculation.", 0) \
+    M(Bool, dfs_query_then_fetch, true, "Enable Distributed Frequency Search (DFS) query to gather global statistical info for accurate BM25 calculation.", 0) \
     M(UInt64, distances_top_k_multiply_factor, 3, "Multiply k in limit by this factor for the top_k in multiple distance functions", 0) \
     M(UInt64, parallel_reading_prefilter_option, 1, "Control parallel reading prefilter options for vector/text/hybrid/sparse search in SELECT queries with where clause. 0 - disable, 1 - adaptive enable depending on mark ranges and row count. 2 - always enable.", 0) \
-    M(Bool, enable_rough_filter_setting, false, "Enable rough filter for vector/text/hybrid search in SELECT queries with where clause.", 0) \
+    M(Bool, enable_rough_filter_setting, true, "Enable rough filter for vector/text/hybrid search in SELECT queries with where clause.", 0) \
     M(String, stream_like_engine_insert_queue, "", "When stream like engine reads from multiple queues, user will need to select one queue to insert into when writing. Used by Redis Streams and NATS.", 0) \
     M(Bool, dictionary_validate_primary_key_type, false, "Validate primary key type for dictionaries. By default id type for simple layouts will be implicitly converted to UInt64.", 0) \
     M(Bool, distributed_insert_skip_read_only_replicas, false, "If true, INSERT into Distributed will skip read-only replicas.", 0) \
@@ -398,6 +399,7 @@ class IColumn;
     M(String, metrics_perf_events_list, "", "Comma separated list of perf metrics that will be measured throughout queries' execution. Empty means all events. See PerfEventInfo in sources for the available events.", 0) \
     M(Float, opentelemetry_start_trace_probability, 0., "Probability to start an OpenTelemetry trace for an incoming query.", 0) \
     M(Bool, opentelemetry_trace_processors, false, "Collect OpenTelemetry spans for processors.", 0) \
+    M(Bool, opentelemetry_trace_cpu_scheduling, false, "Collect OpenTelemetry spans for workload preemptive CPU scheduling.", 0) \
     M(Bool, prefer_column_name_to_alias, false, "Prefer using column names instead of aliases if possible.", 0) \
     \
     M(Bool, prefer_global_in_and_join, false, "If enabled, all IN/JOIN operators will be rewritten as GLOBAL IN/JOIN. It's useful when the to-be-joined tables are only available on the initiator and we need to always scatter their data on-the-fly during distributed processing with the GLOBAL keyword. It's also useful to reduce the need to access the external sources joining external tables.", 0) \
@@ -925,6 +927,7 @@ class IColumn;
     /* ###################################### */ \
     /* ######## EXPERIMENTAL FEATURES ####### */ \
     /* ###################################### */ \
+    M(UInt64, max_autoincrement_series, 1000, R"(The limit on the number of series created by the `generateSeriesID` function. As each series represents a node in Keeper, it is recommended to have no more than a couple of millions of them.)", 0) \
     M(Bool, allow_experimental_materialized_postgresql_table, false, "Allows to use the MaterializedPostgreSQL table engine. Disabled by default, because this feature is experimental", 0) \
     M(Bool, allow_experimental_funnel_functions, false, "Enable experimental functions for funnel analysis.", 0) \
     M(Bool, allow_experimental_nlp_functions, false, "Enable experimental functions for natural language processing.", 0) \
@@ -1020,6 +1023,7 @@ class IColumn;
     MAKE_OBSOLETE(M, Bool, allow_experimental_alter_materialized_view_structure, true) \
     MAKE_OBSOLETE(M, Bool, allow_experimental_shared_merge_tree, true) \
     MAKE_OBSOLETE(M, Bool, allow_experimental_database_replicated, true) \
+    MAKE_OBSOLETE(M, Bool, allow_experimental_bfloat16_type, true) \
     \
     MAKE_OBSOLETE(M, Milliseconds, async_insert_stale_timeout_ms, 0) \
     MAKE_OBSOLETE(M, StreamingHandleErrorMode, handle_kafka_error_mode, StreamingHandleErrorMode::DEFAULT) \

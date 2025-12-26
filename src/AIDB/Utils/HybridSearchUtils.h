@@ -21,39 +21,41 @@
 #include <DataTypes/DataTypesNumber.h>
 #include <Parsers/IAST.h>
 #include <AIDB/Storages/HybridSearchResult.h>
+#include <AIDB/Storages/VSDescription.h>
 
 namespace DB
 {
 using ASTPtr = std::shared_ptr<IAST>;
 
-const String HYBRID_SEARCH_SCORE_COLUMN_NAME = "HybridSearch_func";
+const String VECTOR_SEARCH_SCORE_COLUMN_NAME = "distance_func";
+const String TEXT_SEARCH_SCORE_COLUMN_NAME = "textsearch_func";
+const String SPARSE_SEARCH_SCORE_COLUMN_NAME = "sparsesearch_func";
+
+const String HYBRID_SEARCH_SCORE_COLUMN_NAME = "hybridsearch_func";
 
 /// Distributed Hybrid Search additional columns
 const NameAndTypePair SCORE_TYPE_COLUMN{"_distributed_hybrid_search_score_type", std::make_shared<DataTypeUInt8>()};
 
-void splitHybridSearchAST(
-    ASTPtr & hybrid_search_ast,
-    ASTPtr & vector_search_ast,
-    ASTPtr & text_search_ast,
-    int distance_order_by_direction,
-    UInt64 vector_limit,
-    UInt64 text_limit,
-    bool enable_nlq,
-    String text_operator);
+const UInt8 VECTOR_SEARCH_SCORE_TYPE = 0;
+const UInt8 TEXT_SEARCH_SCORE_TYPE = 1;
+const UInt8 SPARSE_SEARCH_SCORE_TYPE = 2;
+
+UInt8 getHybridSearchScoreType(HybridSearchFuncType search_type);
+
+void splitHybridSearchAST(ASTPtr & hybrid_search_ast, HybridSearchInfoPtr & hybrid_search_info, std::vector<ASTPtr> & query_asts);
 
 void RankFusion(
     std::map<std::tuple<UInt32, UInt64, UInt64>, Float32> & fusion_id_with_score,
-    const ScoreWithPartIndexAndLabels & vec_scan_result_dataset,
-    const ScoreWithPartIndexAndLabels & text_search_result_dataset,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_0,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_1,
     const UInt64 fusion_k,
     LoggerPtr log);
 
 void RelativeScoreFusion(
     std::map<std::tuple<UInt32, UInt64, UInt64>, Float32> & fusion_id_with_score,
-    const ScoreWithPartIndexAndLabels & vec_scan_result_dataset,
-    const ScoreWithPartIndexAndLabels & text_search_result_dataset,
-    const Float32 fusion_weight,
-    const Int8 vector_scan_direction,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_0,
+    const ScoreWithPartIndexAndLabels & result_with_part_index_1,
+    const Float32 fusion_weight_0,
     LoggerPtr log);
 
 void computeNormalizedScore(

@@ -107,7 +107,7 @@ public:
         size_t /*max_block_size*/,
         size_t /*num_streams*/) override;
 
-    void readHybridSearch(
+    void readDistributedHybridSearch(
         QueryPlan & query_plan,
         const StorageSnapshotPtr & storage_snapshot,
         SelectQueryInfo & query_info,

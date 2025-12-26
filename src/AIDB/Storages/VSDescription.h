@@ -115,51 +115,6 @@ struct TextSearchInfo
 
 using TextSearchInfoPtr = std::shared_ptr<const TextSearchInfo>;
 
-struct HybridSearchInfo
-{
-    VectorScanInfoPtr vector_scan_info;
-    TextSearchInfoPtr text_search_info;
-
-    String function_column_name;    /// What name to use for a column with hybrid search function values
-    int topk = -1;                  /// topK value
-    String fusion_type;             /// Fusion type, Relative Score Fustion(RSF) or Reciprocal Rank Fusion(RRF)
-
-    /// Used for score fusion
-    float fusion_weight = -1;       /// weight of text search
-    /// Remove metric_type, use the direction in vector_scan_info instead.
-
-    /// Used for rank fusion
-    int fusion_k = -1;
-
-    HybridSearchInfo(
-        VectorScanInfoPtr vec_scan_info_,
-        TextSearchInfoPtr text_search_info_,
-        String func_col_name_, int topk_, String fusion_type_, float fusion_weight_)
-        : vector_scan_info(vec_scan_info_)
-        , text_search_info(text_search_info_)
-        , function_column_name(func_col_name_)
-        , topk(topk_)
-        , fusion_type(fusion_type_)
-        , fusion_weight(fusion_weight_)
-    {
-    }
-
-    HybridSearchInfo(
-        VectorScanInfoPtr vec_scan_info_,
-        TextSearchInfoPtr text_search_info_,
-        String func_col_name_, int topk_, String fusion_type_, int fusion_k_)
-        : vector_scan_info(vec_scan_info_)
-        , text_search_info(text_search_info_)
-        , function_column_name(func_col_name_)
-        , topk(topk_)
-        , fusion_type(fusion_type_)
-        , fusion_k(fusion_k_)
-    {
-    }
-};
-
-using HybridSearchInfoPtr = std::shared_ptr<const HybridSearchInfo>;
-
 struct SparseSearchInfo
 {
     enum class SearchMode
@@ -211,5 +166,67 @@ struct SparseSearchInfo
 };
 
 using SparseSearchInfoPtr = std::shared_ptr<const SparseSearchInfo>;
+
+struct HybridSearchInfo
+{
+    VectorScanInfoPtr vector_scan_info;
+    TextSearchInfoPtr text_search_info;
+    SparseSearchInfoPtr sparse_search_info;
+
+    /// The search types in the hybrid search function.
+    std::vector<HybridSearchFuncType> search_func_list;
+
+    String function_column_name;    /// What name to use for a column with hybrid search function values
+    int topk = -1;                  /// TopK value
+    String fusion_type;             /// Fusion type, Relative Score Fustion(RSF) or Reciprocal Rank Fusion(RRF)
+
+    /// Used for score fusion
+    float fusion_weight = -1;       /// weight of text search
+
+    /// Used for rank fusion
+    int fusion_k = -1;
+
+    HybridSearchInfo(
+        VectorScanInfoPtr vec_scan_info_,
+        TextSearchInfoPtr text_search_info_,
+        SparseSearchInfoPtr sparse_search_info_,
+        std::vector<HybridSearchFuncType> search_func_list_,
+        String func_col_name_,
+        int topk_,
+        String fusion_type_,
+        float fusion_weight_)
+        : vector_scan_info(vec_scan_info_)
+        , text_search_info(text_search_info_)
+        , sparse_search_info(sparse_search_info_)
+        , search_func_list(search_func_list_)
+        , function_column_name(func_col_name_)
+        , topk(topk_)
+        , fusion_type(fusion_type_)
+        , fusion_weight(fusion_weight_)
+    {
+    }
+
+    HybridSearchInfo(
+        VectorScanInfoPtr vec_scan_info_,
+        TextSearchInfoPtr text_search_info_,
+        SparseSearchInfoPtr sparse_search_info_,
+        std::vector<HybridSearchFuncType> search_func_list_,
+        String func_col_name_,
+        int topk_,
+        String fusion_type_,
+        int fusion_k_)
+        : vector_scan_info(vec_scan_info_)
+        , text_search_info(text_search_info_)
+        , sparse_search_info(sparse_search_info_)
+        , search_func_list(search_func_list_)
+        , function_column_name(func_col_name_)
+        , topk(topk_)
+        , fusion_type(fusion_type_)
+        , fusion_k(fusion_k_)
+    {
+    }
+};
+
+using HybridSearchInfoPtr = std::shared_ptr<const HybridSearchInfo>;
 
 }

@@ -1046,6 +1046,7 @@ void TCPHandler::processOrdinaryQuery()
 
     {
         PullingAsyncPipelineExecutor executor(pipeline);
+        pipeline.setConcurrencyControl(query_context->getSettingsRef().use_concurrency_control);
         CurrentMetrics::Increment query_thread_metric_increment{CurrentMetrics::QueryThread};
 
         /// The following may happen:

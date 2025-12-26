@@ -334,6 +334,7 @@ public:
         , pipeline(std::move(pipeline_))
         , executor(pipeline)
     {
+        pipeline.setConcurrencyControl(false);
     }
 
     std::string getName() const override

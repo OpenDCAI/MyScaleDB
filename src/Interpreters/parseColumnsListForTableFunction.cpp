@@ -85,8 +85,8 @@ void validateDataType(const DataTypePtr & type_to_check, const DataTypeValidatio
             {
                 throw Exception(
                     ErrorCodes::ILLEGAL_COLUMN,
-                    "Cannot create column with type '{}' because experimental Variant type is not allowed. "
-                    "Set setting allow_experimental_variant_type = 1 in order to allow it",
+                    "Cannot create column with type '{}' because Variant type is not allowed. "
+                    "Set setting enable_variant_type = 1 in order to allow it",
                     data_type.getName());
             }
         }

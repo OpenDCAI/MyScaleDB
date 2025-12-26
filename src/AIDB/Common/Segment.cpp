@@ -876,11 +876,6 @@ SegmentInfoPtrList SimpleSegment<data_type>::getSegmentInfoList() const
 template <Search::DataType data_type>
 bool SimpleSegment<data_type>::supportTwoStageSearch() const
 {
-    if constexpr (data_type == Search::DataType::FloatVector)
-    {
-        if (vi_metadata.index_type == VIType::SCANN)
-            return true;
-    }
     return false;
 }
 

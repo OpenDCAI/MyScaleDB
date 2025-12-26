@@ -38,6 +38,7 @@
 #include <Parsers/ASTIdentifier.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTLiteral.h>
+#include <Parsers/ASTOrderByElement.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Parsers/parseQuery.h>
@@ -88,6 +89,7 @@
 #include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
 #include <Processors/Sources/NullSource.h>
 #include <Processors/Sources/RemoteSource.h>
+#include <Processors/QueryPlan/SortingStep.h>
 #include <Processors/Sinks/EmptySink.h>
 #include <Processors/QueryPlan/UnionStep.h>
 
@@ -103,6 +105,7 @@
 #include <filesystem>
 #include <cassert>
 
+#include <AIDB/Processors/FusionSortingStep.h>
 #include <AIDB/Utils/HybridSearchUtils.h>
 
 
@@ -809,7 +812,7 @@ void StorageDistributed::read(
     // Distributed HybridSearch need to split query into vector search and text search
     if (query_info.has_hybrid_search && query_info.hybrid_search_info && getShardCount() > 1)
     {
-        return readHybridSearch(query_plan, storage_snapshot, query_info, local_context, processed_stage);
+        return readDistributedHybridSearch(query_plan, storage_snapshot, query_info, local_context, processed_stage);
     }
 
     Block header;
@@ -900,22 +903,40 @@ void StorageDistributed::read(
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Pipeline is not initialized");
 }
 
-void StorageDistributed::readHybridSearch(
+void StorageDistributed::readDistributedHybridSearch(
     QueryPlan & query_plan,
     const StorageSnapshotPtr & storage_snapshot,
     SelectQueryInfo & query_info,
     ContextPtr local_context,
     QueryProcessingStage::Enum processed_stage)
 {
-    auto settings = local_context->getSettingsRef();
+    Block header;
 
+    SelectQueryInfo modified_query_info = query_info;
+
+    const auto & settings = local_context->getSettingsRef();
     if (settings.allow_experimental_analyzer)
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "HybridSearch is not supported with experimental analyzer");
+    {
+        StorageID remote_storage_id = StorageID::createEmpty();
+        if (!remote_table_function_ptr)
+            remote_storage_id = StorageID{remote_database, remote_table};
 
-    Block header = InterpreterSelectQuery(query_info.query, local_context, SelectQueryOptions(processed_stage).analyze()).getSampleBlock();
+        auto query_tree_distributed = buildQueryTreeDistributed(modified_query_info,
+            query_info.merge_storage_snapshot ? query_info.merge_storage_snapshot : storage_snapshot,
+            remote_storage_id,
+            remote_table_function_ptr);
+        header = InterpreterSelectQueryAnalyzer::getSampleBlock(query_tree_distributed, local_context, SelectQueryOptions(processed_stage).analyze());
+        /** For distributed tables we do not need constants in header, since we don't send them to remote servers.
+          * Moreover, constants can break some functions like `hostName` that are constants only for local queries.
+          */
+        for (auto & column : header)
+            column.column = column.column->convertToFullColumnIfConst();
+    }
+    else
+        header = InterpreterSelectQuery(modified_query_info.query, local_context, SelectQueryOptions(processed_stage).analyze()).getSampleBlock();
 
     /// Return directly (with correct header) if no shard to query.
-    if (query_info.getCluster()->getShardsInfo().empty())
+    if (modified_query_info.getCluster()->getShardsInfo().empty())
     {
         Pipe pipe(std::make_shared<NullSource>(header));
         auto read_from_pipe = std::make_unique<ReadFromPreparedSource>(std::move(pipe));
@@ -925,16 +946,53 @@ void StorageDistributed::readHybridSearch(
         return;
     }
 
-    ASTPtr query_ast_vector_search, query_ast_text_search;
-    splitHybridSearchAST(
-        query_info.query,
-        query_ast_vector_search,
-        query_ast_text_search,
-        query_info.hybrid_search_info->vector_scan_info->vector_scan_descs[0].direction,
-        query_info.hybrid_search_info->vector_scan_info->vector_scan_descs[0].topk,
-        query_info.hybrid_search_info->text_search_info->topk,
-        query_info.hybrid_search_info->text_search_info->enable_nlq,
-        query_info.hybrid_search_info->text_search_info->text_operator);
+    /// Currently for new analyzer enabled only.
+    /// Rewrite original query to include columns for distributed hybrid search fusion
+    Block old_analyzer_header;
+
+    auto mutable_context_copy = Context::createCopy(local_context);
+    mutable_context_copy->setSetting("allow_experimental_analyzer", false);
+    ContextPtr context_copy = mutable_context_copy;
+
+    if (settings.allow_experimental_analyzer)
+    {
+        /// Add score_type column and fusion id columns for multiple-shard distributed hybrid search
+        /// fusion id columns: _shard_num, _part_index, _part_offset
+        auto score_type_identifier = std::make_shared<ASTIdentifier>(SCORE_TYPE_COLUMN.name);
+
+        auto * select_query = modified_query_info.query->as<ASTSelectQuery>();
+        if (!select_query)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Not a select query");
+
+        select_query->select()->children.push_back(score_type_identifier);
+
+        if (!select_query->orderBy())
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Hybrid search requires ORDER BY clause.");
+
+        auto shard_num_element = std::make_shared<ASTOrderByElement>();
+        shard_num_element->direction = 1;
+        shard_num_element->children.emplace_back(makeASTFunction("shardNum"));
+
+        auto part_index_element = std::make_shared<ASTOrderByElement>();
+        part_index_element->direction = 1;
+        part_index_element->children.emplace_back(std::make_shared<ASTIdentifier>("_part_index"));
+
+        auto part_offset_element = std::make_shared<ASTOrderByElement>();
+        part_offset_element->direction = 1;
+        part_offset_element->children.emplace_back(std::make_shared<ASTIdentifier>("_part_offset"));
+
+        select_query->orderBy()->children.push_back(std::move(shard_num_element));
+        select_query->orderBy()->children.push_back(std::move(part_index_element));
+        select_query->orderBy()->children.push_back(std::move(part_offset_element));
+
+        old_analyzer_header = InterpreterSelectQuery(modified_query_info.query, context_copy, SelectQueryOptions(processed_stage).analyze()).getSampleBlock();
+    }
+    else
+        old_analyzer_header = header;
+
+
+    std::vector<ASTPtr> query_asts;
+    splitHybridSearchAST(query_info.query, query_info.hybrid_search_info, query_asts);
 
     StorageID main_table = StorageID::createEmpty();
     if (!remote_table_function_ptr)
@@ -945,17 +1003,17 @@ void StorageDistributed::readHybridSearch(
     auto executeHybridSearch = [&](ASTPtr & query_ast, QueryPlan & query_plan_hybrid_search, UInt8 score_type)
     {
         Block header_query
-            = InterpreterSelectQuery(query_ast, local_context, SelectQueryOptions(processed_stage).analyze()).getSampleBlock();
+            = InterpreterSelectQuery(query_ast, context_copy, SelectQueryOptions(processed_stage).analyze()).getSampleBlock();
 
-        SelectQueryInfo modified_query_info = query_info;
-        modified_query_info.query = ClusterProxy::rewriteSelectQuery(
-            local_context, query_ast, remote_database, remote_table, remote_table_function_ptr);
+        SelectQueryInfo local_modified_query_info = modified_query_info;
+        local_modified_query_info.query = ClusterProxy::rewriteSelectQuery(
+            context_copy, query_ast, remote_database, remote_table, remote_table_function_ptr);
 
         ClusterProxy::SelectStreamFactory select_stream_factory
             = ClusterProxy::SelectStreamFactory(header_query, snapshot_data.objects_by_shard, storage_snapshot, processed_stage);
 
         auto shard_filter_generator = ClusterProxy::getShardFilterGeneratorForCustomKey(
-            *query_info.getCluster(), local_context, getInMemoryMetadataPtr()->columns);
+            *modified_query_info.getCluster(), context_copy, getInMemoryMetadataPtr()->columns);
 
         ClusterProxy::executeQuery(
             query_plan_hybrid_search,
@@ -965,8 +1023,8 @@ void StorageDistributed::readHybridSearch(
             remote_table_function_ptr,
             select_stream_factory,
             log,
-            local_context,
-            modified_query_info,
+            context_copy,
+            local_modified_query_info,
             sharding_key_expr,
             sharding_key_column_name,
             distributed_settings,
@@ -990,15 +1048,14 @@ void StorageDistributed::readHybridSearch(
             query_plan_hybrid_search.addStep(std::move(transform_step));
         }
 
-        /// Rename score column name: distance_func -> HybridSearch_func, textsearch_func -> HybridSearch_func
+        /// Rename score column name
+        // distance_func -> HybridSearch_func, textsearch_func -> HybridSearch_func, sparse_search_func -> HybridSearch_func
         {
             auto columns_with_type_and_name = query_plan_hybrid_search.getCurrentDataStream().header.getColumnsWithTypeAndName();
             for (auto & column : columns_with_type_and_name)
             {
-                if (score_type == 0 && column.name == "distance_func")
-                    column.name = "HybridSearch_func";
-                else if (score_type == 1 && column.name == "textsearch_func")
-                    column.name = "HybridSearch_func";
+                if (column.name == VECTOR_SEARCH_SCORE_COLUMN_NAME || column.name == TEXT_SEARCH_SCORE_COLUMN_NAME || column.name == SPARSE_SEARCH_SCORE_COLUMN_NAME)
+                    column.name = HYBRID_SEARCH_SCORE_COLUMN_NAME;
             }
 
             auto actions_dag = ActionsDAG::makeConvertingActions(
@@ -1015,7 +1072,7 @@ void StorageDistributed::readHybridSearch(
         {
             auto actions_dag = ActionsDAG::makeConvertingActions(
                 query_plan_hybrid_search.getCurrentDataStream().header.getColumnsWithTypeAndName(),
-                header.getColumnsWithTypeAndName(),
+                old_analyzer_header.getColumnsWithTypeAndName(),
                 ActionsDAG::MatchColumnsMode::Name);
 
             auto converting_step
@@ -1025,18 +1082,113 @@ void StorageDistributed::readHybridSearch(
         }
     };
 
-    QueryPlan query_plan_vector_search, query_plan_text_search;
-    executeHybridSearch(query_ast_vector_search, query_plan_vector_search, 0);
-    executeHybridSearch(query_ast_text_search, query_plan_text_search, 1);
+    std::vector<std::unique_ptr<QueryPlan>> query_plans;
+    for (size_t i = 0; i < query_info.hybrid_search_info->search_func_list.size(); i++)
+    {
+        UInt8 score_type = -1;
+        if (query_info.hybrid_search_info->search_func_list[i] == HybridSearchFuncType::VECTOR_SCAN)
+            score_type = VECTOR_SEARCH_SCORE_TYPE;
+        else if (query_info.hybrid_search_info->search_func_list[i] == HybridSearchFuncType::TEXT_SEARCH)
+            score_type = TEXT_SEARCH_SCORE_TYPE;
+        else if (query_info.hybrid_search_info->search_func_list[i] == HybridSearchFuncType::SPARSE_SEARCH)
+            score_type = SPARSE_SEARCH_SCORE_TYPE;
+        else
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Unsupported search type in HybridSearch function");
 
-    DataStreams input_streams{query_plan_vector_search.getCurrentDataStream(), query_plan_text_search.getCurrentDataStream()};
+        query_plans.emplace_back(std::make_unique<QueryPlan>());
+        executeHybridSearch(query_asts[i], *query_plans.back(), score_type);
+    }
 
-    std::vector<std::unique_ptr<QueryPlan>> plans;
-    plans.emplace_back(std::make_unique<QueryPlan>(std::move(query_plan_vector_search)));
-    plans.emplace_back(std::make_unique<QueryPlan>(std::move(query_plan_text_search)));
+    DataStreams input_streams;
+    for (auto & search_query_plan : query_plans)
+        input_streams.emplace_back(search_query_plan->getCurrentDataStream());
 
     auto union_step = std::make_unique<UnionStep>(std::move(input_streams));
-    query_plan.unitePlans(std::move(union_step), std::move(plans));
+    query_plan.unitePlans(std::move(union_step), std::move(query_plans));
+
+    /// executeFusionSorted after read from shards
+    if (settings.allow_experimental_analyzer)
+    {
+        /// Before Distributed HybridSearch Fusion, ORDER BY SCORE_TYPE_COLUMN ASC, HYBRID_SEARCH_SCORE_COLUMN_NAME DESC
+        SortDescription before_fusion_order_descr;
+        before_fusion_order_descr.push_back(SortColumnDescription(SCORE_TYPE_COLUMN.name, 1, 1));
+        before_fusion_order_descr.push_back(SortColumnDescription(HYBRID_SEARCH_SCORE_COLUMN_NAME, -1, 1));
+
+        SortingStep::Settings sort_settings(*context_copy);
+
+        /// Merge and sort the sorted blocks from different shards that include distance or bm25 score.
+        /// Set limit = 0 to get all global distance and BM25 top-k results.
+        auto sorting_step = std::make_unique<SortingStep>(
+            query_plan.getCurrentDataStream(),
+            before_fusion_order_descr,
+            0,
+            sort_settings,
+            settings.optimize_sorting_by_input_stream_properties);
+
+        sorting_step->setStepDescription("Sorting before HybridSearch Fusion");
+        query_plan.addStep(std::move(sorting_step));
+
+        /// Fuse the sorted blocks to HybridSearch top-k results.
+        /// sort by hybrid search score for new analyzer
+        SortDescription sort_description;
+        sort_description.push_back(SortColumnDescription(HYBRID_SEARCH_SCORE_COLUMN_NAME, -1, 1));
+        UInt64 num_candidates = query_info.hybrid_search_info->topk * settings.hybrid_search_top_k_multiple_base;
+
+        auto fusion_sorting = std::make_unique<FusionSortingStep>(
+            query_plan.getCurrentDataStream(),
+            sort_description,
+            num_candidates,
+            num_candidates,
+            query_info.hybrid_search_info->fusion_type,
+            query_info.hybrid_search_info->search_func_list,
+            settings.hybrid_search_fusion_k,
+            settings.hybrid_search_fusion_weight,
+            query_info.hybrid_search_info->vector_scan_info->vector_scan_descs[0].direction);
+
+        fusion_sorting->setStepDescription("HybridSearch Fusion and Sorting");
+        query_plan.addStep(std::move(fusion_sorting));
+
+        /// Remove columns for distributed hybrid search fusion
+        NamesWithAliases results_alias; /// alias name in outputs of new analyter header for inputs
+        Names result_columns;
+
+        for (const auto & name : header.getNames())
+        {
+            String col_name;
+            auto pos = name.find('.');
+            if (pos != std::string::npos)
+                col_name = name.substr(pos + 1);
+            else
+                col_name = name;
+
+            if (isHybridSearch(col_name))
+            {
+                for (const auto & old_name : old_analyzer_header.getNames())
+                {
+                    if (isHybridSearch(old_name))
+                    {
+                        col_name = old_name;
+                        break;
+                    }
+                }
+            }
+
+            /// in new analyzer, the result column name is HybridSearch. While in old analyzer, the result column name is HybridSearch_func
+            /// in new analyzer, the result column name may contain table alias name, e.g. __table1.id
+            results_alias.push_back({col_name, name});
+            result_columns.push_back(col_name);
+        }
+        auto project_inputs = old_analyzer_header.getNamesAndTypesList();
+        project_inputs = project_inputs.filter(result_columns);
+
+        ActionsDAG project_dag(project_inputs);
+        project_dag.project(results_alias);
+        project_dag.appendInputsForUnusedColumns(old_analyzer_header);
+
+        auto project_step = std::make_unique<ExpressionStep>(query_plan.getCurrentDataStream(), std::move(project_dag));
+        project_step->setStepDescription("Project");
+        query_plan.addStep(std::move(project_step));
+    }
 
     /// This is a bug, it is possible only when there is no shards to query, and this is handled earlier.
     if (!query_plan.isInitialized())
