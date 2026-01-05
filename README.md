@@ -1,7 +1,7 @@
 # OriginHub MyScaleDB
 
 <div align="center">
-  <img src="docs/assets/originhub-myscale3.jpg" alt="MyScale">
+  <img src="docs/assets/originhub-myscale4.png" alt="MyScale">
 
 [![Documents](https://img.shields.io/badge/Documents-Click_here-brightgreen?logo=read-the-docs)](https://originhub.tech/#/docs)
 [![](https://img.shields.io/github/license/OpenDCAI/DataFlow)](https://github.com/OriginHubAI/MyScaleDB/blob/myscaledb-oss/LICENSE)
